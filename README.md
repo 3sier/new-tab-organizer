@@ -102,6 +102,7 @@ Claves guardadas en `chrome.storage.local`:
 - `newtab.weatherCity`
 - `newtab.pinnedBookmarks`
 - El wallpaper personalizado ya no se guarda entero en `chrome.storage.local`: se guarda una marca ligera en storage/localStorage y la imagen real en `IndexedDB`, para evitar que se pierda por límites de cuota al reiniciar Brave o abrir nuevas ventanas.
+- Para que una ventana nueva pinte el fondo al instante, también se guarda una preview pequeña en `localStorage`, y `index.html` la aplica antes de que arranque React; luego se reemplaza con la imagen completa desde `IndexedDB` con una transición tipo blur-up para disimular la carga.
 
 ## Notas rápidas para futura memoria
 

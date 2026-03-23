@@ -5,6 +5,48 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>New Tab</title>
+    <script>
+      ;(() => {
+        const STORAGE_KEYS = {
+          wallpaper: 'newtab.wallpaper',
+          wallpaperPreview: 'newtab.wallpaperPreview',
+        }
+        const CUSTOM_WALLPAPER_MARKER = '__custom_wallpaper__'
+        const WALLPAPER_PRESETS = {
+          'midnight-default': 'linear-gradient(135deg, #090c12 0%, #0d1118 35%, #111723 100%)',
+          'violet-glow': 'radial-gradient(circle at top left, rgba(124, 140, 255, 0.45), transparent 34%), linear-gradient(140deg, #0c1020 0%, #1a1336 45%, #091018 100%)',
+          aurora:
+            'radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.35), transparent 32%), radial-gradient(circle at 80% 10%, rgba(167, 139, 250, 0.28), transparent 26%), linear-gradient(140deg, #06111a 0%, #0a1f2b 45%, #120d24 100%)',
+          sunset:
+            'radial-gradient(circle at top, rgba(251, 146, 60, 0.35), transparent 34%), linear-gradient(140deg, #1f1126 0%, #4c1d32 46%, #0b1326 100%)',
+          'forest-mist':
+            'radial-gradient(circle at 25% 15%, rgba(74, 222, 128, 0.22), transparent 28%), linear-gradient(140deg, #08130f 0%, #11231c 45%, #0b1719 100%)',
+        }
+
+        try {
+          const storedWallpaper = window.localStorage.getItem(STORAGE_KEYS.wallpaper) || 'midnight-default'
+          const previewWallpaper = window.localStorage.getItem(STORAGE_KEYS.wallpaperPreview) || ''
+          const backgroundImage =
+            storedWallpaper === CUSTOM_WALLPAPER_MARKER
+              ? previewWallpaper
+                ? `url(${previewWallpaper})`
+                : WALLPAPER_PRESETS['midnight-default']
+              : WALLPAPER_PRESETS[storedWallpaper] || WALLPAPER_PRESETS['midnight-default']
+
+          document.documentElement.style.background = '#0f172a'
+          document.body.style.margin = '0'
+          document.body.style.minHeight = '100vh'
+          document.body.style.backgroundImage = backgroundImage
+          document.body.style.backgroundPosition = 'center'
+          document.body.style.backgroundSize = 'cover'
+          document.body.style.backgroundRepeat = 'no-repeat'
+          document.body.style.backgroundAttachment = 'fixed'
+          document.body.style.filter = storedWallpaper === CUSTOM_WALLPAPER_MARKER && previewWallpaper ? 'blur(10px) saturate(1.08)' : 'none'
+        } catch {
+          // Ignore preload failures and let the app render normally.
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

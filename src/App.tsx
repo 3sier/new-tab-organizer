@@ -59,6 +59,7 @@ type ToastState = {
 const browserChrome = (globalThis as ChromeLike).chrome
 const STORAGE_KEYS = {
   wallpaper: 'newtab.wallpaper',
+  wallpaperPreview: 'newtab.wallpaperPreview',
   wallpaperBlur: 'newtab.wallpaperBlur',
   note: 'newtab.note',
   weatherCity: 'newtab.weatherCity',
@@ -305,6 +306,35 @@ function getWallpaperStyle(wallpaper: string) {
   return { backgroundImage: WALLPAPER_PRESETS[0].background }
 }
 
+function getWallpaperPreviewFromLocalStorage() {
+  try {
+    if (typeof window === 'undefined') return ''
+    return window.localStorage.getItem(STORAGE_KEYS.wallpaperPreview) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function getInitialWallpaper() {
+  try {
+    if (typeof window === 'undefined') return WALLPAPER_PRESETS[0].id
+
+    const storedWallpaper = window.localStorage.getItem(STORAGE_KEYS.wallpaper) ?? ''
+
+    if (isWallpaperPreset(storedWallpaper)) {
+      return storedWallpaper
+    }
+
+    if (storedWallpaper === CUSTOM_WALLPAPER_MARKER) {
+      return getWallpaperPreviewFromLocalStorage() || WALLPAPER_PRESETS[0].id
+    }
+  } catch {
+    // Fall back to the default preset.
+  }
+
+  return WALLPAPER_PRESETS[0].id
+}
+
 async function storageGet(key: string): Promise<string> {
   if (!browserChrome?.storage?.local) return ''
   const result = await browserChrome.storage.local.get(key)
@@ -390,6 +420,32 @@ async function wallpaperAssetSet(value: string) {
   })
 }
 
+async function createWallpaperPreview(dataUrl: string): Promise<string> {
+  if (typeof window === 'undefined') return ''
+
+  return new Promise((resolve) => {
+    const image = new window.Image()
+    image.onload = () => {
+      const maxWidth = 320
+      const scale = Math.min(1, maxWidth / Math.max(image.width, 1))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(image.width * scale))
+      canvas.height = Math.max(1, Math.round(image.height * scale))
+
+      const context = canvas.getContext('2d')
+      if (!context) {
+        resolve('')
+        return
+      }
+
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/jpeg', 0.82))
+    }
+    image.onerror = () => resolve('')
+    image.src = dataUrl
+  })
+}
+
 async function wallpaperAssetDelete() {
   try {
     const database = await openWallpaperDatabase()
@@ -468,6 +524,15 @@ async function setStoredWallpaper(value: string) {
 
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(STORAGE_KEYS.wallpaper, storageValue)
+
+    if (storageValue === CUSTOM_WALLPAPER_MARKER) {
+      const preview = await createWallpaperPreview(value)
+      if (preview) {
+        window.localStorage.setItem(STORAGE_KEYS.wallpaperPreview, preview)
+      }
+    } else {
+      window.localStorage.removeItem(STORAGE_KEYS.wallpaperPreview)
+    }
   }
 }
 
@@ -696,13 +761,14 @@ function App() {
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherEditorOpen, setWeatherEditorOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
-  const [wallpaper, setWallpaper] = useState(WALLPAPER_PRESETS[0].id)
+  const [wallpaper, setWallpaper] = useState(getInitialWallpaper)
   const [wallpaperBlur, setWallpaperBlur] = useState(0)
   const [note, setNote] = useState('Termina la home, limpia el layout y deja todo bonito.')
   const [pinnedBookmarkIds, setPinnedBookmarkIds] = useState<string[]>([])
   const [activeBookmarkDrag, setActiveBookmarkDrag] = useState<FlatBookmark | null>(null)
   const [activeFolderDragId, setActiveFolderDragId] = useState<string | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
+  const [wallpaperReady, setWallpaperReady] = useState(() => !getWallpaperPreviewFromLocalStorage())
 
   const canManageBookmarks = Boolean(browserChrome?.bookmarks)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
@@ -734,7 +800,10 @@ function App() {
           storageGetStringArray(STORAGE_KEYS.pinnedBookmarks),
         ])
 
-        if (savedWallpaper) setWallpaper(savedWallpaper)
+        if (savedWallpaper) {
+          setWallpaper(savedWallpaper)
+          setWallpaperReady(true)
+        }
         if (savedWallpaperBlur !== null) setWallpaperBlur(Math.max(0, Math.min(savedWallpaperBlur, 40)))
         if (savedNote) setNote(savedNote)
         if (savedWeatherCity) {
@@ -1000,6 +1069,7 @@ function App() {
   const handleWallpaperPreset = async (presetId: string) => {
     try {
       setWallpaper(presetId)
+      setWallpaperReady(true)
       await setStoredWallpaper(presetId)
       pushToast('Wallpaper actualizado')
     } catch (error) {
@@ -1017,6 +1087,7 @@ function App() {
         const result = typeof reader.result === 'string' ? reader.result : ''
         if (!result) throw new Error('Imagen vacía')
         setWallpaper(result)
+        setWallpaperReady(true)
         await setStoredWallpaper(result)
         pushToast('Wallpaper personalizado guardado')
       } catch (error) {
@@ -1178,10 +1249,10 @@ function App() {
   return (
     <main className="app-shell">
       <div
-        className="wallpaper"
+        className={`wallpaper ${wallpaperReady ? 'is-ready' : 'is-preview'}`}
         style={{
           ...getWallpaperStyle(wallpaper),
-          filter: wallpaperFilter,
+          filter: wallpaperReady ? wallpaperFilter : `${wallpaperFilter === 'none' ? '' : `${wallpaperFilter} `}blur(10px) saturate(1.08)`,
         }}
       />
       <div className="gradient-overlay" />
