@@ -24,7 +24,9 @@
   background-image: linear-gradient(135deg, #090c12 0%, #0d1118 35%, #111723 100%);
   background-size: cover;
   background-position: center;
-  transform: scale(1.05);
+  transform: scale(1.08);
+  transition: filter 0.2s ease;
+  will-change: transform, filter;
 }
 
 .gradient-overlay {
@@ -200,8 +202,6 @@
   align-items: center;
 }
 
-
-
 .folder-pill {
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -231,7 +231,8 @@
 .drag-handle,
 .folder-drag-handle,
 .modal-tab,
-.modal-close {
+.modal-close,
+.wallpaper-swatch {
   border: 0;
   background: transparent;
   color: inherit;
@@ -409,7 +410,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 
 .shortcut-actions {
   position: absolute;
@@ -641,6 +641,70 @@
 .widget-card h3 {
   font-size: 24px;
   margin-bottom: 8px;
+  text-transform: capitalize;
+}
+
+.wallpaper-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.wallpaper-swatch {
+  position: relative;
+  min-height: 76px;
+  border-radius: 18px;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 -40px 60px rgba(0, 0, 0, 0.28);
+}
+
+.wallpaper-swatch span {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wallpaper-swatch.is-active {
+  outline: 2px solid rgba(145, 204, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.wallpaper-blur-control {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.wallpaper-blur-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.wallpaper-blur-head span {
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.wallpaper-blur-head strong {
+  font-size: 14px;
+}
+
+.wallpaper-blur-slider {
+  width: 100%;
+  accent-color: #7c8cff;
 }
 
 .weather-form {
@@ -886,6 +950,45 @@
   background: rgba(124, 140, 255, 0.12);
 }
 
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  min-width: 240px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 12, 18, 0.92);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.22s ease;
+}
+
+.toast-success {
+  border-color: rgba(74, 222, 128, 0.24);
+}
+
+.toast-error {
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.toast-info {
+  border-color: rgba(125, 211, 252, 0.28);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 1100px) {
   .content-grid {
     grid-template-columns: 1fr;
@@ -930,7 +1033,8 @@
   .side-column,
   .shortcut-grid,
   .dual-actions,
-  .weather-form-actions {
+  .weather-form-actions,
+  .wallpaper-preset-grid {
     grid-template-columns: 1fr;
   }
 
@@ -938,5 +1042,13 @@
   .weather-head {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .toast {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    min-width: 0;
+    max-width: none;
   }
 }

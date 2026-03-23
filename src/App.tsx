@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import {
   closestCenter,
@@ -28,6 +28,7 @@ type ChromeLike = typeof globalThis & {
 }
 
 type CreateMode = 'folder' | 'bookmark'
+type ToastTone = 'success' | 'error' | 'info'
 
 type WeatherData = {
   city: string
@@ -43,13 +44,59 @@ type WeatherData = {
   }[]
 }
 
+type WallpaperPreset = {
+  id: string
+  name: string
+  background: string
+}
+
+type ToastState = {
+  id: number
+  message: string
+  tone: ToastTone
+}
+
 const browserChrome = (globalThis as ChromeLike).chrome
 const STORAGE_KEYS = {
   wallpaper: 'newtab.wallpaper',
+  wallpaperBlur: 'newtab.wallpaperBlur',
   note: 'newtab.note',
   weatherCity: 'newtab.weatherCity',
   pinnedBookmarks: 'newtab.pinnedBookmarks',
 }
+const CUSTOM_WALLPAPER_MARKER = '__custom_wallpaper__'
+const WALLPAPER_DB_NAME = 'newtab-assets'
+const WALLPAPER_DB_VERSION = 1
+const WALLPAPER_STORE_NAME = 'assets'
+const WALLPAPER_RECORD_KEY = 'wallpaper'
+
+const WALLPAPER_PRESETS: WallpaperPreset[] = [
+  {
+    id: 'midnight-default',
+    name: 'Midnight',
+    background: 'linear-gradient(135deg, #090c12 0%, #0d1118 35%, #111723 100%)',
+  },
+  {
+    id: 'violet-glow',
+    name: 'Violet Glow',
+    background: 'radial-gradient(circle at top left, rgba(124, 140, 255, 0.45), transparent 34%), linear-gradient(140deg, #0c1020 0%, #1a1336 45%, #091018 100%)',
+  },
+  {
+    id: 'aurora',
+    name: 'Aurora',
+    background: 'radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.35), transparent 32%), radial-gradient(circle at 80% 10%, rgba(167, 139, 250, 0.28), transparent 26%), linear-gradient(140deg, #06111a 0%, #0a1f2b 45%, #120d24 100%)',
+  },
+  {
+    id: 'sunset',
+    name: 'Sunset',
+    background: 'radial-gradient(circle at top, rgba(251, 146, 60, 0.35), transparent 34%), linear-gradient(140deg, #1f1126 0%, #4c1d32 46%, #0b1326 100%)',
+  },
+  {
+    id: 'forest-mist',
+    name: 'Forest Mist',
+    background: 'radial-gradient(circle at 25% 15%, rgba(74, 222, 128, 0.22), transparent 28%), linear-gradient(140deg, #08130f 0%, #11231c 45%, #0b1719 100%)',
+  },
+]
 
 type FlatBookmark = {
   id: string
@@ -241,6 +288,23 @@ function weatherEmoji(code: number) {
   return '🌤️'
 }
 
+function isWallpaperPreset(value: string) {
+  return WALLPAPER_PRESETS.some((item) => item.id === value)
+}
+
+function getWallpaperStyle(wallpaper: string) {
+  const preset = WALLPAPER_PRESETS.find((item) => item.id === wallpaper)
+  if (preset) {
+    return { backgroundImage: preset.background }
+  }
+
+  if (wallpaper) {
+    return { backgroundImage: `url(${wallpaper})` }
+  }
+
+  return { backgroundImage: WALLPAPER_PRESETS[0].background }
+}
+
 async function storageGet(key: string): Promise<string> {
   if (!browserChrome?.storage?.local) return ''
   const result = await browserChrome.storage.local.get(key)
@@ -255,9 +319,156 @@ async function storageGetStringArray(key: string): Promise<string[]> {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
-async function storageSet(key: string, value: string | string[]) {
+async function storageGetNumber(key: string): Promise<number | null> {
+  if (!browserChrome?.storage?.local) return null
+  const result = await browserChrome.storage.local.get(key)
+  const value = result[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+async function storageSet(key: string, value: string | string[] | number) {
   if (!browserChrome?.storage?.local) return
   await browserChrome.storage.local.set({ [key]: value })
+}
+
+function openWallpaperDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      reject(new Error('IndexedDB no disponible'))
+      return
+    }
+
+    const request = window.indexedDB.open(WALLPAPER_DB_NAME, WALLPAPER_DB_VERSION)
+
+    request.onupgradeneeded = () => {
+      const database = request.result
+      if (!database.objectStoreNames.contains(WALLPAPER_STORE_NAME)) {
+        database.createObjectStore(WALLPAPER_STORE_NAME)
+      }
+    }
+
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('No se pudo abrir IndexedDB'))
+  })
+}
+
+async function wallpaperAssetGet(): Promise<string> {
+  const database = await openWallpaperDatabase()
+
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readonly')
+    const store = transaction.objectStore(WALLPAPER_STORE_NAME)
+    const request = store.get(WALLPAPER_RECORD_KEY)
+
+    request.onsuccess = () => {
+      database.close()
+      resolve(typeof request.result === 'string' ? request.result : '')
+    }
+    request.onerror = () => {
+      database.close()
+      reject(request.error ?? new Error('No se pudo leer el wallpaper'))
+    }
+  })
+}
+
+async function wallpaperAssetSet(value: string) {
+  const database = await openWallpaperDatabase()
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readwrite')
+    const store = transaction.objectStore(WALLPAPER_STORE_NAME)
+    const request = store.put(value, WALLPAPER_RECORD_KEY)
+
+    request.onsuccess = () => {
+      database.close()
+      resolve()
+    }
+    request.onerror = () => {
+      database.close()
+      reject(request.error ?? new Error('No se pudo guardar el wallpaper'))
+    }
+  })
+}
+
+async function wallpaperAssetDelete() {
+  try {
+    const database = await openWallpaperDatabase()
+
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readwrite')
+      const store = transaction.objectStore(WALLPAPER_STORE_NAME)
+      const request = store.delete(WALLPAPER_RECORD_KEY)
+
+      request.onsuccess = () => {
+        database.close()
+        resolve()
+      }
+      request.onerror = () => {
+        database.close()
+        reject(request.error ?? new Error('No se pudo borrar el wallpaper'))
+      }
+    })
+  } catch {
+    // If IndexedDB is unavailable there is nothing to delete.
+  }
+}
+
+async function getStoredWallpaper(): Promise<string> {
+  let storedValue = ''
+
+  try {
+    storedValue = await storageGet(STORAGE_KEYS.wallpaper)
+  } catch {
+    storedValue = ''
+  }
+
+  if (!storedValue) {
+    try {
+      if (typeof window !== 'undefined') {
+        storedValue = window.localStorage.getItem(STORAGE_KEYS.wallpaper) ?? ''
+      }
+    } catch {
+      storedValue = ''
+    }
+  }
+
+  if (!storedValue) return ''
+
+  if (storedValue === CUSTOM_WALLPAPER_MARKER) {
+    return wallpaperAssetGet()
+  }
+
+  if (isWallpaperPreset(storedValue)) {
+    return storedValue
+  }
+
+  if (storedValue.startsWith('data:')) {
+    await wallpaperAssetSet(storedValue)
+    try {
+      await storageSet(STORAGE_KEYS.wallpaper, CUSTOM_WALLPAPER_MARKER)
+      window.localStorage.setItem(STORAGE_KEYS.wallpaper, CUSTOM_WALLPAPER_MARKER)
+    } catch {
+      // Best-effort migration from legacy storage.
+    }
+  }
+
+  return storedValue
+}
+
+async function setStoredWallpaper(value: string) {
+  const storageValue = isWallpaperPreset(value) ? value : CUSTOM_WALLPAPER_MARKER
+
+  if (storageValue === CUSTOM_WALLPAPER_MARKER) {
+    await wallpaperAssetSet(value)
+  } else {
+    await wallpaperAssetDelete()
+  }
+
+  await storageSet(STORAGE_KEYS.wallpaper, storageValue)
+
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(STORAGE_KEYS.wallpaper, storageValue)
+  }
 }
 
 async function fetchWeather(city: string): Promise<WeatherData> {
@@ -485,14 +696,27 @@ function App() {
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherEditorOpen, setWeatherEditorOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
-  const [wallpaper, setWallpaper] = useState('')
+  const [wallpaper, setWallpaper] = useState(WALLPAPER_PRESETS[0].id)
+  const [wallpaperBlur, setWallpaperBlur] = useState(0)
   const [note, setNote] = useState('Termina la home, limpia el layout y deja todo bonito.')
   const [pinnedBookmarkIds, setPinnedBookmarkIds] = useState<string[]>([])
   const [activeBookmarkDrag, setActiveBookmarkDrag] = useState<FlatBookmark | null>(null)
   const [activeFolderDragId, setActiveFolderDragId] = useState<string | null>(null)
+  const [toast, setToast] = useState<ToastState | null>(null)
 
   const canManageBookmarks = Boolean(browserChrome?.bookmarks)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
+
+  const pushToast = useCallback((message: string, tone: ToastTone = 'success') => {
+    setToast({ id: Date.now(), message, tone })
+  }, [])
+
+  useEffect(() => {
+    if (!toast) return undefined
+
+    const timeout = window.setTimeout(() => setToast(null), 2800)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(new Date()), 30_000)
@@ -501,20 +725,26 @@ function App() {
 
   useEffect(() => {
     void (async () => {
-      const [savedWallpaper, savedNote, savedWeatherCity, savedPinnedBookmarks] = await Promise.all([
-        storageGet(STORAGE_KEYS.wallpaper),
-        storageGet(STORAGE_KEYS.note),
-        storageGet(STORAGE_KEYS.weatherCity),
-        storageGetStringArray(STORAGE_KEYS.pinnedBookmarks),
-      ])
+      try {
+        const [savedWallpaper, savedWallpaperBlur, savedNote, savedWeatherCity, savedPinnedBookmarks] = await Promise.all([
+          getStoredWallpaper().catch(() => ''),
+          storageGetNumber(STORAGE_KEYS.wallpaperBlur),
+          storageGet(STORAGE_KEYS.note),
+          storageGet(STORAGE_KEYS.weatherCity),
+          storageGetStringArray(STORAGE_KEYS.pinnedBookmarks),
+        ])
 
-      if (savedWallpaper) setWallpaper(savedWallpaper)
-      if (savedNote) setNote(savedNote)
-      if (savedWeatherCity) {
-        setWeatherCity(savedWeatherCity)
-        setWeatherDraft(savedWeatherCity)
+        if (savedWallpaper) setWallpaper(savedWallpaper)
+        if (savedWallpaperBlur !== null) setWallpaperBlur(Math.max(0, Math.min(savedWallpaperBlur, 40)))
+        if (savedNote) setNote(savedNote)
+        if (savedWeatherCity) {
+          setWeatherCity(savedWeatherCity)
+          setWeatherDraft(savedWeatherCity)
+        }
+        if (savedPinnedBookmarks.length) setPinnedBookmarkIds(savedPinnedBookmarks)
+      } catch (error) {
+        console.error('No se pudieron cargar las preferencias guardadas', error)
       }
-      if (savedPinnedBookmarks.length) setPinnedBookmarkIds(savedPinnedBookmarks)
     })()
   }, [])
 
@@ -534,7 +764,7 @@ function App() {
     })()
   }, [weatherCity])
 
-  const loadBookmarks = async () => {
+  const loadBookmarks = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -552,11 +782,11 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     void loadBookmarks()
-  }, [])
+  }, [loadBookmarks])
 
   const folders = useMemo(() => collectFolders(tree), [tree])
   const allBookmarks = useMemo(() => flattenBookmarks(tree), [tree])
@@ -620,6 +850,7 @@ function App() {
     month: 'long',
   })
   const activeFolderLabel = selectedFolder?.title || 'Carpeta'
+  const wallpaperFilter = wallpaperBlur > 0 ? `blur(${wallpaperBlur}px)` : 'none'
 
   const handleSearchSubmit = (event: FormEvent) => {
     event.preventDefault()
@@ -673,6 +904,7 @@ function App() {
     setSelectedFolderId(created.id)
     await loadBookmarks()
     closeCreateModal()
+    pushToast(`Carpeta “${title}” creada`)
   }
 
   const handleCreateBookmark = async (event: FormEvent) => {
@@ -682,6 +914,7 @@ function App() {
 
     if (!normalizedUrl) {
       setFormError('Pon una URL válida. Si escribes youtube.com, yo le añado https://.')
+      pushToast('La URL no es válida', 'error')
       return
     }
 
@@ -695,12 +928,15 @@ function App() {
 
     await loadBookmarks()
     closeCreateModal()
+    pushToast(`Marcador “${title || bookmarkHost(normalizedUrl)}” guardado`)
   }
 
   const handleDeleteBookmark = async (id: string) => {
     if (!canManageBookmarks || !browserChrome) return
+    const bookmark = allBookmarks.find((item) => item.id === id)
     await browserChrome.bookmarks.remove(id)
     await loadBookmarks()
+    pushToast(`Marcador “${bookmark?.title || 'sin título'}” borrado`, 'info')
   }
 
   const handleDeleteFolder = async (folderId: string, folderTitle: string) => {
@@ -710,6 +946,7 @@ function App() {
     await browserChrome.bookmarks.removeTree(folderId)
     if (selectedFolderId === folderId) setSelectedFolderId('')
     await loadBookmarks()
+    pushToast(`Carpeta “${folderTitle}” borrada`, 'info')
   }
 
   const startRenameFolder = (folder: FolderItem) => {
@@ -720,10 +957,12 @@ function App() {
   const handleRenameFolder = async (event: FormEvent) => {
     event.preventDefault()
     if (!editingFolderId || !editingFolderTitle.trim() || !canManageBookmarks || !browserChrome) return
-    await browserChrome.bookmarks.update(editingFolderId, { title: editingFolderTitle.trim() })
+    const nextTitle = editingFolderTitle.trim()
+    await browserChrome.bookmarks.update(editingFolderId, { title: nextTitle })
     setEditingFolderId(null)
     setEditingFolderTitle('')
     await loadBookmarks()
+    pushToast(`Carpeta renombrada a “${nextTitle}”`)
   }
 
   const startEditBookmark = (bookmark: FlatBookmark) => {
@@ -739,6 +978,7 @@ function App() {
     const normalizedUrl = normalizeUrl(editingBookmark.url)
     if (!normalizedUrl) {
       setFormError('Pon una URL válida. Si escribes youtube.com, yo le añado https://.')
+      pushToast('La URL no es válida', 'error')
       return
     }
 
@@ -754,6 +994,18 @@ function App() {
     setEditingBookmark(null)
     setFormError(null)
     await loadBookmarks()
+    pushToast('Marcador actualizado')
+  }
+
+  const handleWallpaperPreset = async (presetId: string) => {
+    try {
+      setWallpaper(presetId)
+      await setStoredWallpaper(presetId)
+      pushToast('Wallpaper actualizado')
+    } catch (error) {
+      console.error('No se pudo guardar el wallpaper', error)
+      pushToast('No se pudo guardar el wallpaper', 'error')
+    }
   }
 
   const handleWallpaperChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -761,11 +1013,24 @@ function App() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = async () => {
-      const result = typeof reader.result === 'string' ? reader.result : ''
-      setWallpaper(result)
-      await storageSet(STORAGE_KEYS.wallpaper, result)
+      try {
+        const result = typeof reader.result === 'string' ? reader.result : ''
+        if (!result) throw new Error('Imagen vacía')
+        setWallpaper(result)
+        await setStoredWallpaper(result)
+        pushToast('Wallpaper personalizado guardado')
+      } catch (error) {
+        console.error('No se pudo guardar el wallpaper personalizado', error)
+        pushToast('No se pudo guardar la imagen de fondo', 'error')
+      }
     }
     reader.readAsDataURL(file)
+  }
+
+  const handleWallpaperBlurChange = async (value: number) => {
+    const nextBlur = Math.max(0, Math.min(Math.round(value), 40))
+    setWallpaperBlur(nextBlur)
+    await storageSet(STORAGE_KEYS.wallpaperBlur, nextBlur)
   }
 
   const handleNoteChange = async (value: string) => {
@@ -781,15 +1046,20 @@ function App() {
     setWeatherDraft(city)
     setWeatherEditorOpen(false)
     await storageSet(STORAGE_KEYS.weatherCity, city)
+    pushToast(`Tiempo actualizado a ${city}`)
   }
 
   const togglePinnedBookmark = async (bookmarkId: string) => {
-    const nextPinned = pinnedBookmarkIds.includes(bookmarkId)
+    const isPinned = pinnedBookmarkIds.includes(bookmarkId)
+    const nextPinned = isPinned
       ? pinnedBookmarkIds.filter((id) => id !== bookmarkId)
       : [...pinnedBookmarkIds, bookmarkId]
 
     setPinnedBookmarkIds(nextPinned)
     await storageSet(STORAGE_KEYS.pinnedBookmarks, nextPinned)
+
+    const bookmark = allBookmarks.find((item) => item.id === bookmarkId)
+    pushToast(isPinned ? `Quitado de fijados: ${bookmark?.title || 'marcador'}` : `Fijado: ${bookmark?.title || 'marcador'}`)
   }
 
   const resetDragState = () => {
@@ -814,10 +1084,13 @@ function App() {
     })
 
     await loadBookmarks()
+    pushToast('Orden de marcadores actualizado')
   }
 
   const moveBookmarkToFolder = async (bookmarkId: string, targetFolderId: string) => {
     if (!browserChrome?.bookmarks?.move || targetFolderId === selectedFolderId) return
+
+    const targetFolder = folders.find((folder) => folder.id === targetFolderId)
 
     await browserChrome.bookmarks.move(bookmarkId, {
       parentId: targetFolderId,
@@ -825,6 +1098,7 @@ function App() {
 
     setSelectedFolderId(targetFolderId)
     await loadBookmarks()
+    pushToast(`Marcador movido a ${targetFolder?.title || 'otra carpeta'}`)
   }
 
   const reorderFolders = async (activeSortId: string, overSortId: string) => {
@@ -841,6 +1115,7 @@ function App() {
 
     await browserChrome.bookmarks.move(moved.id, { parentId: '1', index: newIndex })
     await loadBookmarks()
+    pushToast('Orden de carpetas actualizado')
   }
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -902,7 +1177,13 @@ function App() {
 
   return (
     <main className="app-shell">
-      <div className="wallpaper" style={wallpaper ? { backgroundImage: `url(${wallpaper})` } : undefined} />
+      <div
+        className="wallpaper"
+        style={{
+          ...getWallpaperStyle(wallpaper),
+          filter: wallpaperFilter,
+        }}
+      />
       <div className="gradient-overlay" />
 
       <section className="dashboard">
@@ -1013,12 +1294,41 @@ function App() {
               {organizeMode ? (
                 <section className="glass-card widget-card hero-widget">
                   <p className="eyebrow">Ambiente</p>
-                  <h3>Personaliza el fondo</h3>
-                  <p>Sube una imagen y conviértelo en tu dashboard personal.</p>
+                  <h3>Wallpapers</h3>
+                  <p>Elige uno predefinido o sube una imagen propia.</p>
+                  <div className="wallpaper-preset-grid">
+                    {WALLPAPER_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={`wallpaper-swatch ${wallpaper === preset.id ? 'is-active' : ''}`}
+                        onClick={() => void handleWallpaperPreset(preset.id)}
+                        title={preset.name}
+                        style={{ backgroundImage: preset.background }}
+                      >
+                        <span>{preset.name}</span>
+                      </button>
+                    ))}
+                  </div>
                   <label className="upload-button">
                     <input type="file" accept="image/*" onChange={handleWallpaperChange} />
-                    Elegir wallpaper
+                    Subir wallpaper
                   </label>
+                  <div className="wallpaper-blur-control">
+                    <div className="wallpaper-blur-head">
+                      <span>Blur</span>
+                      <strong>{wallpaperBlur}px</strong>
+                    </div>
+                    <input
+                      className="wallpaper-blur-slider"
+                      type="range"
+                      min="0"
+                      max="40"
+                      step="1"
+                      value={wallpaperBlur}
+                      onChange={(event) => void handleWallpaperBlurChange(Number(event.target.value))}
+                    />
+                  </div>
                 </section>
               ) : null}
 
@@ -1254,6 +1564,12 @@ function App() {
                 </div>
               </form>
             </div>
+          </div>
+        ) : null}
+
+        {toast ? (
+          <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite">
+            {toast.message}
           </div>
         ) : null}
       </section>
