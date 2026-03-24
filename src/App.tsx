@@ -1258,6 +1258,7 @@ function App() {
 
   const exitOrganizeMode = () => {
     setOrganizeMode(false)
+    setConfigPanelOpen(false)
     setEditingFolderId(null)
     setEditingBookmark(null)
     setFormError(null)
@@ -1348,7 +1349,7 @@ function App() {
 
       if (configPanelOpen) {
         event.preventDefault()
-        setConfigPanelOpen(false)
+        exitOrganizeMode()
         return
       }
 
@@ -1392,7 +1393,7 @@ function App() {
       const target = event.target
       if (!settingsPopoverRef.current) return
       if (target instanceof Node && !settingsPopoverRef.current.contains(target)) {
-        setConfigPanelOpen(false)
+        exitOrganizeMode()
       }
     }
 
@@ -1424,7 +1425,7 @@ function App() {
                 className={`settings-gear ${configPanelOpen ? 'is-active' : ''}`}
                 onClick={() => {
                   if (configPanelOpen) {
-                    setConfigPanelOpen(false)
+                    exitOrganizeMode()
                     return
                   }
                   setConfigPanelOpen(true)
