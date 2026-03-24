@@ -8,6 +8,24 @@ Objetivo pedido por Asier:
 - añadir toast feedback
 - documentar el repo para no perder contexto en futuras sesiones
 
+## Pack 3 (Cleanup técnico)
+
+Qué se ejecutó:
+
+- extraer utilidades de búsqueda a `src/lib/search.ts`:
+  - normalización y puntuación fuzzy
+  - construcción de URL de búsqueda Brave
+  - helper `bookmarkHost`
+- extraer helpers de storage/wallpaper/imágenes a:
+  - `src/lib/storage.ts`
+  - `src/lib/wallpaper.ts`
+  - `src/lib/image.ts`
+- extraer componentes de UI ligeros:
+  - `src/components/SearchBar.tsx`
+  - `src/components/Toast.tsx`
+  - `src/components/WallpaperPanel.tsx`
+- mover llamadas `App.tsx` para usar módulos sin cambios de comportamiento
+
 ## Cambios funcionales
 
 ### Blur de wallpaper
@@ -66,12 +84,19 @@ Casos cubiertos:
 - `docs/ARCHITECTURE.md`
 - `docs/CHANGELOG.md`
 - `docs/SESSION_NOTES.md`
+- `src/lib/search.ts`
+- `src/lib/storage.ts`
+- `src/lib/image.ts`
+- `src/lib/wallpaper.ts`
+- `src/components/SearchBar.tsx`
+- `src/components/Toast.tsx`
+- `src/components/WallpaperPanel.tsx`
 
 ## Comando de verificación ejecutado
 
 ```bash
 npm run build
-```
+``` 
 
 Resultado: OK
 
@@ -86,4 +111,3 @@ Resultado: OK
 - extraer componentes y hooks para reducir el tamaño de `App.tsx`
 - extraer componentes y hooks para reducir el tamaño de `App.tsx`
 - si más adelante apetece ocupar ese hueco, probar otro widget más útil que el calendario
-

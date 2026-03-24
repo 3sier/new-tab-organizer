@@ -7,7 +7,7 @@ Extensión para Chrome/Brave que reemplaza la nueva pestaña por una vista organ
 - Override de `new tab`
 - Lectura real de marcadores con `chrome.bookmarks`
 - Lista lateral de carpetas
-- Búsqueda por título, host o URL
+- Búsqueda por título, host o URL con orden por similitud (tolerante a typos simples)
 - Área de marcadores fijados con persistencia en `chrome.storage.local`
 - Crear carpetas
 - Crear marcadores
@@ -20,6 +20,13 @@ Extensión para Chrome/Brave que reemplaza la nueva pestaña por una vista organ
 - Widget de tiempo con previsión de 3 días y cambio de ciudad persistente
 - Widget de calendario mensual
 - Wallpapers predefinidos + wallpaper personalizado por subida de imagen
+- Persistencia de carpeta activa entre pestañas y ventanas
+- Atajos:
+  - `/` y `Ctrl/Cmd + K` enfocan la búsqueda,
+  - `N` crea marcador, `Shift + N` crea carpeta,
+  - `↑` / `↓` navega resultados de búsqueda,
+  - `Enter` abre el resultado resaltado al buscar,
+  - `Esc` cierra edición/modal/organize mode
 - Toast feedback para acciones de usuario
 - Fallback de datos mock para desarrollo fuera de la extensión
 
@@ -35,7 +42,16 @@ Extensión para Chrome/Brave que reemplaza la nueva pestaña por una vista organ
 
 ```text
 src/
-  App.tsx      -> toda la lógica principal y la UI
+  App.tsx          -> orchestración principal de estado y flujo
+  components/      -> componentes extraídos para mantener UI limpia
+    SearchBar.tsx
+    Toast.tsx
+    WallpaperPanel.tsx
+  lib/             -> utilidades sin efectos laterales
+    search.ts      -> normalización + puntuación y ordenado de búsqueda
+    storage.ts     -> claves y wrappers de storage/localStorage
+    image.ts       -> lectura y redimensionado de imágenes local
+    wallpaper.ts   -> presets y lógica de persistencia de wallpaper
   App.css      -> estilos completos de la interfaz
   main.tsx     -> bootstrap de React
   index.css    -> estilos globales base
@@ -62,6 +78,7 @@ La app vive casi entera en `src/App.tsx`.
   - se usa para leer, crear, editar, borrar y mover marcadores/carpetas
 - `chrome.storage.local`
   - persiste wallpaper, nota rápida, ciudad del tiempo y marcadores fijados
+  - persiste carpeta activa (`newtab.selectedFolder`)
 - Open-Meteo
   - geocoding + previsión meteorológica
 
@@ -101,8 +118,14 @@ Claves guardadas en `chrome.storage.local`:
 - `newtab.note`
 - `newtab.weatherCity`
 - `newtab.pinnedBookmarks`
+- `newtab.selectedFolder`
+- `newtab.widgetShowWallpaperPanel`
+- `newtab.widgetShowWeatherWidget`
+- `newtab.widgetShowPinnedWidget`
+- `newtab.widgetShowNoteWidget`
 - El wallpaper personalizado ya no se guarda entero en `chrome.storage.local`: se guarda una marca ligera en storage/localStorage y la imagen real en `IndexedDB`, para evitar que se pierda por límites de cuota al reiniciar Brave o abrir nuevas ventanas.
 - Para que una ventana nueva pinte el fondo al instante, también se guarda una preview pequeña en `localStorage`, y `index.html` la aplica antes de que arranque React; luego se reemplaza con la imagen completa desde `IndexedDB` con una transición tipo blur-up para disimular la carga.
+- Los wallpapers subidos se redimensionan y comprimen antes de guardarse para reducir tamaño.
 
 ## Notas rápidas para futura memoria
 

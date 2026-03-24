@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import {
   closestCenter,
@@ -20,12 +20,41 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import './App.css'
+import { SearchBar } from './components/SearchBar'
+import { Toast } from './components/Toast'
+import { WallpaperPanel } from './components/WallpaperPanel'
+import {
+  buildBrowserSearchUrl,
+  bookmarkHost,
+  SEARCH_RESULT_LIMIT,
+  getSearchScore,
+} from './lib/search'
+import {
+  browserChrome,
+  getStoredFolderFromLocalStorage,
+  getWallpaperPreviewFromLocalStorage,
+  persistSelectedFolder,
+  STORAGE_KEYS,
+  storageGet,
+  storageGetNumber,
+  storageGetStringArray,
+  storageGetBoolean,
+  storageSet,
+} from './lib/storage'
+import {
+  isCustomWallpaper,
+  getInitialWallpaper,
+  getWallpaperStyle,
+  getStoredWallpaper,
+  setStoredWallpaper,
+  WALLPAPER_PRESETS,
+} from './lib/wallpaper'
+import {
+  createOptimizedWallpaperDataUrl,
+  readFileAsDataUrl,
+} from './lib/image'
 
 type BookmarkNode = chrome.bookmarks.BookmarkTreeNode
-
-type ChromeLike = typeof globalThis & {
-  chrome?: typeof chrome
-}
 
 type CreateMode = 'folder' | 'bookmark'
 type ToastTone = 'success' | 'error' | 'info'
@@ -44,10 +73,26 @@ type WeatherData = {
   }[]
 }
 
-type WallpaperPreset = {
-  id: string
-  name: string
-  background: string
+type WidgetVisibility = {
+  wallpaperPanel: boolean
+  weatherWidget: boolean
+  pinnedWidget: boolean
+  noteWidget: boolean
+}
+
+type ConfigPayload = {
+  version: number
+  exportedAt: string
+  app: string
+  config: {
+    wallpaper: string
+    wallpaperBlur: number
+    note: string
+    weatherCity: string
+    pinnedBookmarks: string[]
+    selectedFolder: string
+    widgetVisibility: WidgetVisibility
+  }
 }
 
 type ToastState = {
@@ -55,49 +100,6 @@ type ToastState = {
   message: string
   tone: ToastTone
 }
-
-const browserChrome = (globalThis as ChromeLike).chrome
-const STORAGE_KEYS = {
-  wallpaper: 'newtab.wallpaper',
-  wallpaperPreview: 'newtab.wallpaperPreview',
-  wallpaperBlur: 'newtab.wallpaperBlur',
-  note: 'newtab.note',
-  weatherCity: 'newtab.weatherCity',
-  pinnedBookmarks: 'newtab.pinnedBookmarks',
-}
-const CUSTOM_WALLPAPER_MARKER = '__custom_wallpaper__'
-const WALLPAPER_DB_NAME = 'newtab-assets'
-const WALLPAPER_DB_VERSION = 1
-const WALLPAPER_STORE_NAME = 'assets'
-const WALLPAPER_RECORD_KEY = 'wallpaper'
-
-const WALLPAPER_PRESETS: WallpaperPreset[] = [
-  {
-    id: 'midnight-default',
-    name: 'Midnight',
-    background: 'linear-gradient(135deg, #090c12 0%, #0d1118 35%, #111723 100%)',
-  },
-  {
-    id: 'violet-glow',
-    name: 'Violet Glow',
-    background: 'radial-gradient(circle at top left, rgba(124, 140, 255, 0.45), transparent 34%), linear-gradient(140deg, #0c1020 0%, #1a1336 45%, #091018 100%)',
-  },
-  {
-    id: 'aurora',
-    name: 'Aurora',
-    background: 'radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.35), transparent 32%), radial-gradient(circle at 80% 10%, rgba(167, 139, 250, 0.28), transparent 26%), linear-gradient(140deg, #06111a 0%, #0a1f2b 45%, #120d24 100%)',
-  },
-  {
-    id: 'sunset',
-    name: 'Sunset',
-    background: 'radial-gradient(circle at top, rgba(251, 146, 60, 0.35), transparent 34%), linear-gradient(140deg, #1f1126 0%, #4c1d32 46%, #0b1326 100%)',
-  },
-  {
-    id: 'forest-mist',
-    name: 'Forest Mist',
-    background: 'radial-gradient(circle at 25% 15%, rgba(74, 222, 128, 0.22), transparent 28%), linear-gradient(140deg, #08130f 0%, #11231c 45%, #0b1719 100%)',
-  },
-]
 
 type FlatBookmark = {
   id: string
@@ -126,9 +128,11 @@ type ShortcutCardProps = {
   isPinned: boolean
   organizeMode: boolean
   sortable: boolean
+  isHighlighted: boolean
   onDelete: (id: string) => void
   onEdit: (bookmark: FlatBookmark) => void
   onTogglePin: (bookmarkId: string) => void
+  onHover: () => void
 }
 
 type FolderPillProps = {
@@ -240,14 +244,6 @@ function findFolderById(nodes: BookmarkNode[] | undefined, folderId: string): Bo
   return null
 }
 
-function bookmarkHost(url: string) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return url
-  }
-}
-
 function getGreeting(hour: number) {
   if (hour < 6) return 'Buenas noches'
   if (hour < 12) return 'Buenos días'
@@ -262,10 +258,6 @@ function getFavicon(url: string) {
   } catch {
     return ''
   }
-}
-
-function buildBrowserSearchUrl(query: string) {
-  return `https://search.brave.com/search?q=${encodeURIComponent(query)}`
 }
 
 function weatherLabel(code: number) {
@@ -289,251 +281,80 @@ function weatherEmoji(code: number) {
   return '🌤️'
 }
 
-function isWallpaperPreset(value: string) {
-  return WALLPAPER_PRESETS.some((item) => item.id === value)
+const CONFIG_EXPORT_VERSION = 1
+const CONFIG_APP_LABEL = 'Brave New Tab Organizer'
+const DEFAULT_WIDGET_VISIBILITY: WidgetVisibility = {
+  wallpaperPanel: true,
+  weatherWidget: true,
+  pinnedWidget: true,
+  noteWidget: true,
+}
+const WIDGET_VISIBILITY_STORAGE_KEYS: Record<keyof WidgetVisibility, string> = {
+  wallpaperPanel: STORAGE_KEYS.widgetShowWallpaperPanel,
+  weatherWidget: STORAGE_KEYS.widgetShowWeatherWidget,
+  pinnedWidget: STORAGE_KEYS.widgetShowPinnedWidget,
+  noteWidget: STORAGE_KEYS.widgetShowNoteWidget,
 }
 
-function getWallpaperStyle(wallpaper: string) {
-  const preset = WALLPAPER_PRESETS.find((item) => item.id === wallpaper)
-  if (preset) {
-    return { backgroundImage: preset.background }
-  }
-
-  if (wallpaper) {
-    return { backgroundImage: `url(${wallpaper})` }
-  }
-
-  return { backgroundImage: WALLPAPER_PRESETS[0].background }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
-function getWallpaperPreviewFromLocalStorage() {
-  try {
-    if (typeof window === 'undefined') return ''
-    return window.localStorage.getItem(STORAGE_KEYS.wallpaperPreview) ?? ''
-  } catch {
-    return ''
-  }
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
-function getInitialWallpaper() {
-  try {
-    if (typeof window === 'undefined') return WALLPAPER_PRESETS[0].id
-
-    const storedWallpaper = window.localStorage.getItem(STORAGE_KEYS.wallpaper) ?? ''
-
-    if (isWallpaperPreset(storedWallpaper)) {
-      return storedWallpaper
-    }
-
-    if (storedWallpaper === CUSTOM_WALLPAPER_MARKER) {
-      return getWallpaperPreviewFromLocalStorage() || WALLPAPER_PRESETS[0].id
-    }
-  } catch {
-    // Fall back to the default preset.
-  }
-
-  return WALLPAPER_PRESETS[0].id
+function isWidgetVisibility(value: unknown): value is WidgetVisibility {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.wallpaperPanel === 'boolean' &&
+    typeof value.weatherWidget === 'boolean' &&
+    typeof value.pinnedWidget === 'boolean' &&
+    typeof value.noteWidget === 'boolean'
+  )
 }
 
-async function storageGet(key: string): Promise<string> {
-  if (!browserChrome?.storage?.local) return ''
-  const result = await browserChrome.storage.local.get(key)
-  const value = result[key]
-  return typeof value === 'string' ? value : ''
-}
+function normalizeConfigPayload(raw: unknown): ConfigPayload | null {
+  const data = isRecord(raw) && isRecord(raw.config) ? raw.config : raw
+  if (!isRecord(data)) return null
 
-async function storageGetStringArray(key: string): Promise<string[]> {
-  if (!browserChrome?.storage?.local) return []
-  const result = await browserChrome.storage.local.get(key)
-  const value = result[key]
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
-}
+  const wallpaper = data.wallpaper
+  const wallpaperBlur = data.wallpaperBlur
+  const note = data.note
+  const weatherCity = data.weatherCity
+  const pinnedBookmarks = data.pinnedBookmarks
+  const selectedFolder = data.selectedFolder
+  const widgetVisibility = data.widgetVisibility
+  const hasBasicFields = (
+    typeof wallpaper === 'string'
+    && typeof note === 'string'
+    && typeof weatherCity === 'string'
+    && isStringArray(pinnedBookmarks)
+    && typeof selectedFolder === 'string'
+  )
 
-async function storageGetNumber(key: string): Promise<number | null> {
-  if (!browserChrome?.storage?.local) return null
-  const result = await browserChrome.storage.local.get(key)
-  const value = result[key]
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
+  if (!hasBasicFields || !isWidgetVisibility(widgetVisibility)) return null
 
-async function storageSet(key: string, value: string | string[] | number) {
-  if (!browserChrome?.storage?.local) return
-  await browserChrome.storage.local.set({ [key]: value })
-}
-
-function openWallpaperDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !window.indexedDB) {
-      reject(new Error('IndexedDB no disponible'))
-      return
-    }
-
-    const request = window.indexedDB.open(WALLPAPER_DB_NAME, WALLPAPER_DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const database = request.result
-      if (!database.objectStoreNames.contains(WALLPAPER_STORE_NAME)) {
-        database.createObjectStore(WALLPAPER_STORE_NAME)
-      }
-    }
-
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('No se pudo abrir IndexedDB'))
-  })
-}
-
-async function wallpaperAssetGet(): Promise<string> {
-  const database = await openWallpaperDatabase()
-
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readonly')
-    const store = transaction.objectStore(WALLPAPER_STORE_NAME)
-    const request = store.get(WALLPAPER_RECORD_KEY)
-
-    request.onsuccess = () => {
-      database.close()
-      resolve(typeof request.result === 'string' ? request.result : '')
-    }
-    request.onerror = () => {
-      database.close()
-      reject(request.error ?? new Error('No se pudo leer el wallpaper'))
-    }
-  })
-}
-
-async function wallpaperAssetSet(value: string) {
-  const database = await openWallpaperDatabase()
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readwrite')
-    const store = transaction.objectStore(WALLPAPER_STORE_NAME)
-    const request = store.put(value, WALLPAPER_RECORD_KEY)
-
-    request.onsuccess = () => {
-      database.close()
-      resolve()
-    }
-    request.onerror = () => {
-      database.close()
-      reject(request.error ?? new Error('No se pudo guardar el wallpaper'))
-    }
-  })
-}
-
-async function createWallpaperPreview(dataUrl: string): Promise<string> {
-  if (typeof window === 'undefined') return ''
-
-  return new Promise((resolve) => {
-    const image = new window.Image()
-    image.onload = () => {
-      const maxWidth = 320
-      const scale = Math.min(1, maxWidth / Math.max(image.width, 1))
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, Math.round(image.width * scale))
-      canvas.height = Math.max(1, Math.round(image.height * scale))
-
-      const context = canvas.getContext('2d')
-      if (!context) {
-        resolve('')
-        return
-      }
-
-      context.drawImage(image, 0, 0, canvas.width, canvas.height)
-      resolve(canvas.toDataURL('image/jpeg', 0.82))
-    }
-    image.onerror = () => resolve('')
-    image.src = dataUrl
-  })
-}
-
-async function wallpaperAssetDelete() {
-  try {
-    const database = await openWallpaperDatabase()
-
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(WALLPAPER_STORE_NAME, 'readwrite')
-      const store = transaction.objectStore(WALLPAPER_STORE_NAME)
-      const request = store.delete(WALLPAPER_RECORD_KEY)
-
-      request.onsuccess = () => {
-        database.close()
-        resolve()
-      }
-      request.onerror = () => {
-        database.close()
-        reject(request.error ?? new Error('No se pudo borrar el wallpaper'))
-      }
-    })
-  } catch {
-    // If IndexedDB is unavailable there is nothing to delete.
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    app: CONFIG_APP_LABEL,
+    config: {
+      wallpaper,
+      wallpaperBlur: typeof wallpaperBlur === 'number' && Number.isFinite(wallpaperBlur) ? wallpaperBlur : 0,
+      note,
+      weatherCity,
+      pinnedBookmarks,
+      selectedFolder,
+      widgetVisibility,
+    },
   }
 }
 
-async function getStoredWallpaper(): Promise<string> {
-  let storedValue = ''
-
-  try {
-    storedValue = await storageGet(STORAGE_KEYS.wallpaper)
-  } catch {
-    storedValue = ''
-  }
-
-  if (!storedValue) {
-    try {
-      if (typeof window !== 'undefined') {
-        storedValue = window.localStorage.getItem(STORAGE_KEYS.wallpaper) ?? ''
-      }
-    } catch {
-      storedValue = ''
-    }
-  }
-
-  if (!storedValue) return ''
-
-  if (storedValue === CUSTOM_WALLPAPER_MARKER) {
-    return wallpaperAssetGet()
-  }
-
-  if (isWallpaperPreset(storedValue)) {
-    return storedValue
-  }
-
-  if (storedValue.startsWith('data:')) {
-    await wallpaperAssetSet(storedValue)
-    try {
-      await storageSet(STORAGE_KEYS.wallpaper, CUSTOM_WALLPAPER_MARKER)
-      window.localStorage.setItem(STORAGE_KEYS.wallpaper, CUSTOM_WALLPAPER_MARKER)
-    } catch {
-      // Best-effort migration from legacy storage.
-    }
-  }
-
-  return storedValue
-}
-
-async function setStoredWallpaper(value: string) {
-  const storageValue = isWallpaperPreset(value) ? value : CUSTOM_WALLPAPER_MARKER
-
-  if (storageValue === CUSTOM_WALLPAPER_MARKER) {
-    await wallpaperAssetSet(value)
-  } else {
-    await wallpaperAssetDelete()
-  }
-
-  await storageSet(STORAGE_KEYS.wallpaper, storageValue)
-
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(STORAGE_KEYS.wallpaper, storageValue)
-
-    if (storageValue === CUSTOM_WALLPAPER_MARKER) {
-      const preview = await createWallpaperPreview(value)
-      if (preview) {
-        window.localStorage.setItem(STORAGE_KEYS.wallpaperPreview, preview)
-      }
-    } else {
-      window.localStorage.removeItem(STORAGE_KEYS.wallpaperPreview)
-    }
-  }
+function isTypingTarget(element: EventTarget | null): boolean {
+  if (!(element instanceof HTMLElement)) return false
+  if (element.isContentEditable) return true
+  return element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT'
 }
 
 async function fetchWeather(city: string): Promise<WeatherData> {
@@ -572,7 +393,18 @@ function getForecastDayLabel(date: string, index: number) {
   return new Date(date).toLocaleDateString('es-ES', { weekday: 'short' })
 }
 
-function ShortcutCard({ bookmark, canManageBookmarks, isPinned, organizeMode, sortable, onDelete, onEdit, onTogglePin }: ShortcutCardProps) {
+function ShortcutCard({
+  bookmark,
+  canManageBookmarks,
+  isPinned,
+  organizeMode,
+  sortable,
+  isHighlighted,
+  onDelete,
+  onEdit,
+  onTogglePin,
+  onHover,
+}: ShortcutCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: bookmark.id,
     disabled: !organizeMode || !sortable,
@@ -586,7 +418,12 @@ function ShortcutCard({ bookmark, canManageBookmarks, isPinned, organizeMode, so
   }
 
   return (
-    <article ref={setNodeRef} style={style} className={`shortcut-card ${organizeMode ? 'is-organize' : ''}`}>
+    <article
+      ref={setNodeRef}
+      style={style}
+      className={`shortcut-card ${organizeMode ? 'is-organize' : ''} ${isHighlighted ? 'is-search-highlight' : ''}`}
+      onMouseEnter={onHover}
+    >
       {organizeMode ? (
         <button type="button" className="drag-handle always-visible" aria-label={`Mover ${bookmark.title}`} {...attributes} {...listeners}>
           ⋮⋮
@@ -740,8 +577,11 @@ function MoveTray({ folders, selectedFolderId, activeFolderId, activeBookmarkTit
 
 function App() {
   const [tree, setTree] = useState<BookmarkNode[]>([])
-  const [selectedFolderId, setSelectedFolderId] = useState<string>('')
+  const [selectedFolderId, setSelectedFolderId] = useState<string>(getStoredFolderFromLocalStorage)
   const [search, setSearch] = useState('')
+  const [searchResultIndex, setSearchResultIndex] = useState(0)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const settingsPopoverRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
@@ -760,9 +600,11 @@ function App() {
   const [weatherError, setWeatherError] = useState<string | null>(null)
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [weatherEditorOpen, setWeatherEditorOpen] = useState(false)
+  const [configPanelOpen, setConfigPanelOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const [wallpaper, setWallpaper] = useState(getInitialWallpaper)
   const [wallpaperBlur, setWallpaperBlur] = useState(0)
+  const [widgetVisibility, setWidgetVisibility] = useState<WidgetVisibility>(DEFAULT_WIDGET_VISIBILITY)
   const [note, setNote] = useState('Termina la home, limpia el layout y deja todo bonito.')
   const [pinnedBookmarkIds, setPinnedBookmarkIds] = useState<string[]>([])
   const [activeBookmarkDrag, setActiveBookmarkDrag] = useState<FlatBookmark | null>(null)
@@ -792,12 +634,28 @@ function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [savedWallpaper, savedWallpaperBlur, savedNote, savedWeatherCity, savedPinnedBookmarks] = await Promise.all([
+        const [
+          savedWallpaper,
+          savedWallpaperBlur,
+          savedNote,
+          savedWeatherCity,
+          savedPinnedBookmarks,
+          savedSelectedFolder,
+          savedWallpaperPanelVisibility,
+          savedWeatherWidgetVisibility,
+          savedPinnedWidgetVisibility,
+          savedNoteWidgetVisibility,
+        ] = await Promise.all([
           getStoredWallpaper().catch(() => ''),
           storageGetNumber(STORAGE_KEYS.wallpaperBlur),
           storageGet(STORAGE_KEYS.note),
           storageGet(STORAGE_KEYS.weatherCity),
           storageGetStringArray(STORAGE_KEYS.pinnedBookmarks),
+          storageGet(STORAGE_KEYS.selectedFolder),
+          storageGetBoolean(STORAGE_KEYS.widgetShowWallpaperPanel),
+          storageGetBoolean(STORAGE_KEYS.widgetShowWeatherWidget),
+          storageGetBoolean(STORAGE_KEYS.widgetShowPinnedWidget),
+          storageGetBoolean(STORAGE_KEYS.widgetShowNoteWidget),
         ])
 
         if (savedWallpaper) {
@@ -811,6 +669,15 @@ function App() {
           setWeatherDraft(savedWeatherCity)
         }
         if (savedPinnedBookmarks.length) setPinnedBookmarkIds(savedPinnedBookmarks)
+        if (savedSelectedFolder) {
+          setSelectedFolderId(savedSelectedFolder)
+        }
+        setWidgetVisibility({
+          wallpaperPanel: savedWallpaperPanelVisibility ?? DEFAULT_WIDGET_VISIBILITY.wallpaperPanel,
+          weatherWidget: savedWeatherWidgetVisibility ?? DEFAULT_WIDGET_VISIBILITY.weatherWidget,
+          pinnedWidget: savedPinnedWidgetVisibility ?? DEFAULT_WIDGET_VISIBILITY.pinnedWidget,
+          noteWidget: savedNoteWidgetVisibility ?? DEFAULT_WIDGET_VISIBILITY.noteWidget,
+        })
       } catch (error) {
         console.error('No se pudieron cargar las preferencias guardadas', error)
       }
@@ -873,6 +740,12 @@ function App() {
     }
   }, [folders, selectedFolderId])
 
+  useEffect(() => {
+    if (!selectedFolderId) return
+    if (!folders.some((folder) => folder.id === selectedFolderId)) return
+    void persistSelectedFolder(selectedFolderId)
+  }, [selectedFolderId, folders])
+
   const selectedFolder = useMemo(
     () => (selectedFolderId ? findFolderById(tree, selectedFolderId) : null),
     [tree, selectedFolderId],
@@ -883,15 +756,17 @@ function App() {
   }, [selectedFolder])
 
   const bookmarkMatches = useMemo(() => {
-    const query = search.trim().toLowerCase()
+    const query = search.trim()
     if (!query) return []
 
-    return allBookmarks.filter((bookmark) => {
-      const title = bookmark.title.toLowerCase()
-      const url = bookmark.url.toLowerCase()
-      const host = bookmarkHost(bookmark.url).toLowerCase()
-      return title.includes(query) || url.includes(query) || host.includes(query)
-    })
+    return allBookmarks
+      .map((bookmark) => ({ bookmark, score: getSearchScore(bookmark, query) }))
+      .filter((item) => item.score >= 15)
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score
+        return left.bookmark.title.localeCompare(right.bookmark.title, 'es')
+      })
+      .map((item) => item.bookmark)
   }, [search, allBookmarks])
 
   useEffect(() => {
@@ -907,7 +782,48 @@ function App() {
   }, [allBookmarks, pinnedBookmarkIds, loading])
 
   const visibleBookmarks = search.trim() ? bookmarkMatches : folderBookmarks
-  const quickLinks = visibleBookmarks.slice(0, 12)
+  const quickLinks = visibleBookmarks.slice(0, SEARCH_RESULT_LIMIT)
+  const hasSearchResults = search.trim().length > 0 && quickLinks.length > 0
+
+  useEffect(() => {
+    if (!search.trim()) {
+      setSearchResultIndex(0)
+      return
+    }
+
+    if (!quickLinks.length) {
+      setSearchResultIndex(0)
+      return
+    }
+
+    setSearchResultIndex((currentIndex) => Math.min(currentIndex, quickLinks.length - 1))
+  }, [search, quickLinks.length])
+
+  const activeSearchResult = useMemo(() => {
+    if (!search.trim() || !quickLinks.length) return null
+    return quickLinks[Math.min(searchResultIndex, quickLinks.length - 1)] || null
+  }, [search, quickLinks, searchResultIndex])
+
+  const handleOpenSearchResult = useCallback((bookmark: FlatBookmark) => {
+    window.location.href = bookmark.url
+  }, [])
+
+  const openResultForActiveSearch = useCallback(() => {
+    if (!search.trim()) return false
+
+    if (activeSearchResult) {
+      handleOpenSearchResult(activeSearchResult)
+      return true
+    }
+
+    if (bookmarkMatches[0]) {
+      handleOpenSearchResult(bookmarkMatches[0])
+      return true
+    }
+
+    return false
+  }, [activeSearchResult, bookmarkMatches, handleOpenSearchResult, search])
+
   const canReorderBookmarks = organizeMode && !search.trim() && Boolean(selectedFolderId)
 
   const hour = now.getHours()
@@ -921,29 +837,17 @@ function App() {
   const activeFolderLabel = selectedFolder?.title || 'Carpeta'
   const wallpaperFilter = wallpaperBlur > 0 ? `blur(${wallpaperBlur}px)` : 'none'
 
-  const handleSearchSubmit = (event: FormEvent) => {
+  const handleSearchSubmit = useCallback((event: FormEvent) => {
     event.preventDefault()
     const query = search.trim()
     if (!query) return
 
-    const exactMatch = bookmarkMatches.find((bookmark) => {
-      const normalized = query.toLowerCase()
-      return (
-        bookmark.title.toLowerCase() === normalized ||
-        bookmark.url.toLowerCase() === normalized ||
-        bookmarkHost(bookmark.url).toLowerCase() === normalized
-      )
-    })
-
-    const firstMatch = exactMatch || bookmarkMatches[0]
-
-    if (firstMatch) {
-      window.location.href = firstMatch.url
+    if (openResultForActiveSearch()) {
       return
     }
 
     window.location.href = buildBrowserSearchUrl(query)
-  }
+  }, [openResultForActiveSearch, search])
 
   const resetCreateForm = () => {
     setNewFolderName('')
@@ -1081,27 +985,140 @@ function App() {
   const handleWallpaperChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = async () => {
-      try {
-        const result = typeof reader.result === 'string' ? reader.result : ''
-        if (!result) throw new Error('Imagen vacía')
-        setWallpaper(result)
-        setWallpaperReady(true)
-        await setStoredWallpaper(result)
-        pushToast('Wallpaper personalizado guardado')
-      } catch (error) {
-        console.error('No se pudo guardar el wallpaper personalizado', error)
-        pushToast('No se pudo guardar la imagen de fondo', 'error')
+
+    try {
+      const originalDataUrl = await readFileAsDataUrl(file)
+      const optimizedDataUrl = await createOptimizedWallpaperDataUrl(originalDataUrl)
+
+      if (!optimizedDataUrl) {
+        throw new Error('Imagen vacía')
       }
+
+      setWallpaper(optimizedDataUrl)
+      setWallpaperReady(true)
+      await setStoredWallpaper(optimizedDataUrl)
+      pushToast('Wallpaper personalizado guardado')
+    } catch (error) {
+      console.error('No se pudo guardar el wallpaper personalizado', error)
+      pushToast('No se pudo guardar la imagen de fondo', 'error')
+    } finally {
+      event.target.value = ''
     }
-    reader.readAsDataURL(file)
+  }
+
+  const handleWallpaperReset = async () => {
+    try {
+      const defaultWallpaper = WALLPAPER_PRESETS[0].id
+      setWallpaper(defaultWallpaper)
+      setWallpaperReady(true)
+      await setStoredWallpaper(defaultWallpaper)
+      pushToast('Wallpaper personalizado eliminado')
+    } catch (error) {
+      console.error('No se pudo restaurar el wallpaper', error)
+      pushToast('No se pudo restaurar el wallpaper', 'error')
+    }
   }
 
   const handleWallpaperBlurChange = async (value: number) => {
     const nextBlur = Math.max(0, Math.min(Math.round(value), 40))
     setWallpaperBlur(nextBlur)
     await storageSet(STORAGE_KEYS.wallpaperBlur, nextBlur)
+  }
+
+  const handleWidgetVisibilityChange = async (key: keyof WidgetVisibility, value: boolean) => {
+    const nextVisibility = { ...widgetVisibility, [key]: value }
+    setWidgetVisibility(nextVisibility)
+    await storageSet(WIDGET_VISIBILITY_STORAGE_KEYS[key], value)
+  }
+
+  const downloadConfig = (payload: ConfigPayload) => {
+    const content = JSON.stringify(payload, null, 2)
+    const blob = new Blob([content], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `brave-newtab-config-${new Date().toISOString().slice(0, 10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleExportConfig = async () => {
+    const wallpaperValue = await getStoredWallpaper().catch(() => wallpaper)
+    const payload: ConfigPayload = {
+      version: CONFIG_EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      app: CONFIG_APP_LABEL,
+      config: {
+        wallpaper: wallpaperValue,
+        wallpaperBlur,
+        note,
+        weatherCity,
+        pinnedBookmarks: pinnedBookmarkIds,
+        selectedFolder: selectedFolderId,
+        widgetVisibility,
+      },
+    }
+
+    downloadConfig(payload)
+    pushToast('Configuración exportada')
+  }
+
+  const handleImportConfig = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      const raw = await file.text()
+      const parsed = JSON.parse(raw)
+      const normalized = normalizeConfigPayload(parsed)
+
+      if (!normalized) {
+        throw new Error('Formato de configuración incorrecto')
+      }
+
+      const imported = normalized.config
+      const nextPinned = imported.pinnedBookmarks
+      const nextWidgetVisibility = {
+        ...widgetVisibility,
+        ...imported.widgetVisibility,
+      }
+
+      setWallpaperBlur(Math.max(0, Math.min(Math.round(imported.wallpaperBlur), 40)))
+      await storageSet(STORAGE_KEYS.wallpaperBlur, Math.max(0, Math.min(Math.round(imported.wallpaperBlur), 40)))
+
+      setNote(imported.note)
+      await storageSet(STORAGE_KEYS.note, imported.note)
+
+      setWeatherCity(imported.weatherCity)
+      setWeatherDraft(imported.weatherCity)
+      await storageSet(STORAGE_KEYS.weatherCity, imported.weatherCity)
+
+      setPinnedBookmarkIds(nextPinned)
+      await storageSet(STORAGE_KEYS.pinnedBookmarks, nextPinned)
+
+      setSelectedFolderId(imported.selectedFolder)
+      await persistSelectedFolder(imported.selectedFolder)
+
+      setWidgetVisibility(nextWidgetVisibility)
+      await Promise.all(Object.keys(nextWidgetVisibility).map((key) => storageSet(
+        WIDGET_VISIBILITY_STORAGE_KEYS[key as keyof WidgetVisibility],
+        nextWidgetVisibility[key as keyof WidgetVisibility],
+      )))
+
+      setWallpaperReady(false)
+      await setStoredWallpaper(imported.wallpaper)
+      const resolvedWallpaper = await getStoredWallpaper().catch(() => imported.wallpaper)
+      setWallpaper(resolvedWallpaper || imported.wallpaper)
+      setWallpaperReady(true)
+
+      await loadBookmarks()
+      pushToast('Configuración importada')
+    } catch (error) {
+      console.error('No se pudo importar la configuración', error)
+      pushToast('No se pudo importar la configuración', 'error')
+    } finally {
+      event.target.value = ''
+    }
   }
 
   const handleNoteChange = async (value: string) => {
@@ -1246,6 +1263,145 @@ function App() {
     setFormError(null)
   }
 
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if ((event.key === 'k' || event.key === 'K') && (event.metaKey || event.ctrlKey) && !isTypingTarget(event.target)) {
+        event.preventDefault()
+        searchInputRef.current?.focus({ preventScroll: true })
+        return
+      }
+
+      if (
+        (event.key === 'n' || event.key === 'N') &&
+        event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isTypingTarget(event.target)
+      ) {
+        event.preventDefault()
+        openCreateModal('folder')
+        return
+      }
+
+      if (
+        (event.key === 'n' || event.key === 'N') &&
+        !event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isTypingTarget(event.target)
+      ) {
+        event.preventDefault()
+        openCreateModal('bookmark')
+        return
+      }
+
+      if (hasSearchResults && event.key === 'ArrowDown' && event.target === searchInputRef.current) {
+        event.preventDefault()
+        setSearchResultIndex((previous) => (previous + 1) % quickLinks.length)
+        return
+      }
+
+      if (hasSearchResults && event.key === 'ArrowUp' && event.target === searchInputRef.current) {
+        event.preventDefault()
+        setSearchResultIndex((previous) => (previous - 1 + quickLinks.length) % quickLinks.length)
+        return
+      }
+
+      if (search.trim() && event.key === 'Enter' && event.target === searchInputRef.current) {
+        event.preventDefault()
+        if (!openResultForActiveSearch()) {
+          window.location.href = buildBrowserSearchUrl(search.trim())
+        }
+        return
+      }
+
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !isTypingTarget(event.target)) {
+        event.preventDefault()
+        searchInputRef.current?.focus({ preventScroll: true })
+        return
+      }
+
+      if (event.key !== 'Escape') return
+
+      if (createModalOpen) {
+        event.preventDefault()
+        closeCreateModal()
+        return
+      }
+
+      if (editingBookmark) {
+        event.preventDefault()
+        setEditingBookmark(null)
+        setFormError(null)
+        return
+      }
+
+      if (editingFolderId) {
+        event.preventDefault()
+        setEditingFolderId(null)
+        setEditingFolderTitle('')
+        setFormError(null)
+        return
+      }
+
+      if (configPanelOpen) {
+        event.preventDefault()
+        setConfigPanelOpen(false)
+        return
+      }
+
+      if (organizeMode) {
+        event.preventDefault()
+        exitOrganizeMode()
+        return
+      }
+
+      if (weatherEditorOpen) {
+        event.preventDefault()
+        setWeatherEditorOpen(false)
+        setWeatherDraft(weatherCity)
+        setWeatherError(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleGlobalKeyDown)
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
+  }, [
+    createModalOpen,
+    editingBookmark,
+    editingFolderId,
+    configPanelOpen,
+    organizeMode,
+    weatherEditorOpen,
+    weatherCity,
+    closeCreateModal,
+    exitOrganizeMode,
+    search,
+    hasSearchResults,
+    quickLinks.length,
+    openCreateModal,
+    openResultForActiveSearch,
+  ])
+
+  useEffect(() => {
+    if (!configPanelOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!settingsPopoverRef.current) return
+      if (target instanceof Node && !settingsPopoverRef.current.contains(target)) {
+        setConfigPanelOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [configPanelOpen])
+
   return (
     <main className="app-shell">
       <div
@@ -1262,13 +1418,102 @@ function App() {
           <div className="topbar-spacer" />
           <div className="topbar-right">
             <div className="topbar-meta">{activeFolderLabel} · {visibleBookmarks.length} links</div>
-            <button
-              type="button"
-              className={`organize-toggle ${organizeMode ? 'is-active' : ''}`}
-              onClick={() => (organizeMode ? exitOrganizeMode() : setOrganizeMode(true))}
-            >
-              {organizeMode ? 'Listo' : 'Organizar'}
-            </button>
+            <div className="settings-popover-wrap" ref={settingsPopoverRef}>
+              <button
+                type="button"
+                className={`settings-gear ${configPanelOpen ? 'is-active' : ''}`}
+                onClick={() => {
+                  if (configPanelOpen) {
+                    setConfigPanelOpen(false)
+                    return
+                  }
+                  setConfigPanelOpen(true)
+                  setOrganizeMode(true)
+                }}
+                aria-label="Abrir ajustes"
+                aria-expanded={configPanelOpen}
+              >
+                <span className="settings-gear-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                    <path
+                      d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"
+                      fill="currentColor"
+                    />
+                    <path
+                      d="M19.4 12a7.05 7.05 0 0 0 .05-.96 7.05 7.05 0 0 0-.05-.96l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1c-.5-.4-1.04-.72-1.64-.96l-.38-2.65A.5.5 0 0 0 14 1.5h-4a.5.5 0 0 0-.5.43l-.38 2.65a7.1 7.1 0 0 0-1.64.96l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.05 7.05 0 0 0-.05.96 7.05 7.05 0 0 0 .05.96l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.15.26.48.36.75.22l2.49-1a7.1 7.1 0 0 0 1.64.96l.38 2.65a.5.5 0 0 0 .5.43h4a.5.5 0 0 0 .5-.43l.38-2.65a7.1 7.1 0 0 0 1.64-.96l2.49 1c.27.1.6 0 .75-.22l2-3.46a.5.5 0 0 0-.12-.64L19.4 12Z"
+                      fill="currentColor"
+                      opacity="0.7"
+                    />
+                  </svg>
+                </span>
+              </button>
+
+              {configPanelOpen ? (
+                <section className="settings-popover glass-card widget-card form-widget config-panel-card">
+                  <p className="eyebrow">Configuración</p>
+                  <h3>Ajustes y widgets</h3>
+                  <p>Personaliza la vista y gestiona exportación, importación y widgets.</p>
+
+                  <div className="config-actions">
+                    <button type="button" className="secondary-button" onClick={() => void handleExportConfig()}>
+                      Exportar configuración
+                    </button>
+                    <label className="upload-button">
+                      <input type="file" accept="application/json" onChange={(event) => void handleImportConfig(event)} />
+                      Importar configuración
+                    </label>
+                  </div>
+
+                  {organizeMode && widgetVisibility.wallpaperPanel ? (
+                    <WallpaperPanel
+                      wallpaper={wallpaper}
+                      wallpaperBlur={wallpaperBlur}
+                      wallpapers={WALLPAPER_PRESETS}
+                      isCustomWallpaper={isCustomWallpaper(wallpaper)}
+                      onSelectPreset={handleWallpaperPreset}
+                      onUpload={handleWallpaperChange}
+                      onReset={handleWallpaperReset}
+                      onBlurChange={handleWallpaperBlurChange}
+                    />
+                  ) : null}
+
+                  <div className="widget-toggle-list">
+                    <label className="widget-toggle">
+                      <input
+                        type="checkbox"
+                        checked={widgetVisibility.wallpaperPanel}
+                        onChange={(event) => void handleWidgetVisibilityChange('wallpaperPanel', event.target.checked)}
+                      />
+                      <span>Mostrar panel de wallpaper en organizar</span>
+                    </label>
+                    <label className="widget-toggle">
+                      <input
+                        type="checkbox"
+                        checked={widgetVisibility.weatherWidget}
+                        onChange={(event) => void handleWidgetVisibilityChange('weatherWidget', event.target.checked)}
+                      />
+                      <span>Mostrar widget del tiempo</span>
+                    </label>
+                    <label className="widget-toggle">
+                      <input
+                        type="checkbox"
+                        checked={widgetVisibility.pinnedWidget}
+                        onChange={(event) => void handleWidgetVisibilityChange('pinnedWidget', event.target.checked)}
+                      />
+                      <span>Mostrar widget fijados</span>
+                    </label>
+                    <label className="widget-toggle">
+                      <input
+                        type="checkbox"
+                        checked={widgetVisibility.noteWidget}
+                        onChange={(event) => void handleWidgetVisibilityChange('noteWidget', event.target.checked)}
+                      />
+                      <span>Mostrar nota rápida</span>
+                    </label>
+                  </div>
+                </section>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -1277,9 +1522,14 @@ function App() {
           <h1>{timeLabel}</h1>
           <p className="date-label">{dateLabel}</p>
 
-          <form className="search-wrap glass-card" onSubmit={handleSearchSubmit}>
-            <input className="search-input" type="search" placeholder={`Busca en ${activeFolderLabel.toLowerCase()}...`} value={search} onChange={(event) => setSearch(event.target.value)} />
-          </form>
+          <SearchBar
+            activeFolderLabel={activeFolderLabel}
+            value={search}
+            searchInputRef={searchInputRef}
+            onChange={setSearch}
+            onSubmit={handleSearchSubmit}
+            onFocus={() => setSearchResultIndex(0)}
+          />
         </section>
 
         <DndContext
@@ -1328,7 +1578,7 @@ function App() {
 
               <SortableContext items={quickLinks.map((bookmark) => bookmark.id)} strategy={rectSortingStrategy}>
                 <div className="shortcut-grid">
-                  {quickLinks.map((bookmark) => (
+                  {quickLinks.map((bookmark, index) => (
                     <ShortcutCard
                       key={bookmark.id}
                       bookmark={bookmark}
@@ -1336,6 +1586,8 @@ function App() {
                       isPinned={pinnedBookmarkIds.includes(bookmark.id)}
                       organizeMode={organizeMode}
                       sortable={canReorderBookmarks}
+                      isHighlighted={search.trim().length > 0 && searchResultIndex === index}
+                      onHover={() => setSearchResultIndex(index)}
                       onDelete={(id) => void handleDeleteBookmark(id)}
                       onEdit={startEditBookmark}
                       onTogglePin={(id) => void togglePinnedBookmark(id)}
@@ -1362,48 +1614,7 @@ function App() {
             </div>
 
             <aside className="side-column">
-              {organizeMode ? (
-                <section className="glass-card widget-card hero-widget">
-                  <p className="eyebrow">Ambiente</p>
-                  <h3>Wallpapers</h3>
-                  <p>Elige uno predefinido o sube una imagen propia.</p>
-                  <div className="wallpaper-preset-grid">
-                    {WALLPAPER_PRESETS.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        className={`wallpaper-swatch ${wallpaper === preset.id ? 'is-active' : ''}`}
-                        onClick={() => void handleWallpaperPreset(preset.id)}
-                        title={preset.name}
-                        style={{ backgroundImage: preset.background }}
-                      >
-                        <span>{preset.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <label className="upload-button">
-                    <input type="file" accept="image/*" onChange={handleWallpaperChange} />
-                    Subir wallpaper
-                  </label>
-                  <div className="wallpaper-blur-control">
-                    <div className="wallpaper-blur-head">
-                      <span>Blur</span>
-                      <strong>{wallpaperBlur}px</strong>
-                    </div>
-                    <input
-                      className="wallpaper-blur-slider"
-                      type="range"
-                      min="0"
-                      max="40"
-                      step="1"
-                      value={wallpaperBlur}
-                      onChange={(event) => void handleWallpaperBlurChange(Number(event.target.value))}
-                    />
-                  </div>
-                </section>
-              ) : null}
-
-              {!search.trim() && pinnedBookmarks.length ? (
+              {!search.trim() && pinnedBookmarks.length && widgetVisibility.pinnedWidget ? (
                 <section className="glass-card widget-card pinned-side-widget">
                   <div className="pinned-strip-head">
                     <p className="eyebrow">Fijados</p>
@@ -1425,79 +1636,84 @@ function App() {
                 </section>
               ) : null}
 
-              <section className="glass-card widget-card weather-widget">
-                <div className="weather-head">
-                  <p className="eyebrow">Tiempo</p>
-                  <button
-                    type="button"
-                    className="weather-city-button"
-                    onClick={() => {
-                      setWeatherEditorOpen((open) => !open)
-                      setWeatherDraft(weatherCity)
-                      setWeatherError(null)
-                    }}
-                  >
-                    {weatherEditorOpen ? 'Cerrar' : 'Cambiar ciudad'}
-                  </button>
-                </div>
+              {widgetVisibility.weatherWidget ? (
+                <section className="glass-card widget-card weather-widget">
+                  <div className="weather-head">
+                    <p className="eyebrow">Tiempo</p>
+                    <button
+                      type="button"
+                      className="weather-city-button"
+                      onClick={() => {
+                        setWeatherEditorOpen((open) => !open)
+                        setWeatherDraft(weatherCity)
+                        setWeatherError(null)
+                      }}
+                    >
+                      {weatherEditorOpen ? 'Cerrar' : 'Cambiar ciudad'}
+                    </button>
+                  </div>
 
-                {weatherEditorOpen ? (
-                  <form className="weather-form weather-form-expanded" onSubmit={(event) => void handleWeatherSubmit(event)}>
-                    <input
-                      value={weatherDraft}
-                      onChange={(event) => setWeatherDraft(event.target.value)}
-                      placeholder="Ciudad"
-                      autoFocus
-                    />
-                    <div className="weather-form-actions">
-                      <button type="submit">Guardar</button>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          setWeatherEditorOpen(false)
-                          setWeatherDraft(weatherCity)
-                          setWeatherError(null)
-                        }}
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </form>
-                ) : null}
+                  {weatherEditorOpen ? (
+                    <form className="weather-form weather-form-expanded" onSubmit={(event) => void handleWeatherSubmit(event)}>
+                      <input
+                        value={weatherDraft}
+                        onChange={(event) => setWeatherDraft(event.target.value)}
+                        placeholder="Ciudad"
+                        autoFocus
+                      />
+                      <div className="weather-form-actions">
+                        <button type="submit">Guardar</button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            setWeatherEditorOpen(false)
+                            setWeatherDraft(weatherCity)
+                            setWeatherError(null)
+                          }}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
 
-                {weather ? (
-                  <>
-                    <h3>{weather.city}</h3>
-                    <div className="weather-main">
-                      <span className="weather-emoji">{weatherEmoji(weather.weatherCode)}</span>
-                      <strong>{weather.temperature}°</strong>
-                    </div>
-                    <p>{weatherLabel(weather.weatherCode)}</p>
-                    <p>Máx {weather.tempMax}° · Mín {weather.tempMin}°</p>
-                    <div className="weather-forecast-mini weather-forecast-grid">
-                      {weather.forecast.map((day, index) => (
-                        <div key={day.date}>
-                          <span>{getForecastDayLabel(day.date, index)}</span>
-                          <strong>{weatherEmoji(day.weatherCode)} {day.tempMax}°</strong>
-                          <small>Mín {day.tempMin}°</small>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : weatherError ? (
-                  <p>{weatherError}</p>
-                ) : weatherLoading ? (
-                  <p>Cargando previsión…</p>
-                ) : (
-                  <p>Cargando tiempo…</p>
-                )}
-              </section>
+                  {weather ? (
+                    <>
+                      <h3>{weather.city}</h3>
+                      <div className="weather-main">
+                        <span className="weather-emoji">{weatherEmoji(weather.weatherCode)}</span>
+                        <strong>{weather.temperature}°</strong>
+                      </div>
+                      <p>{weatherLabel(weather.weatherCode)}</p>
+                      <p>Máx {weather.tempMax}° · Mín {weather.tempMin}°</p>
+                      <div className="weather-forecast-mini weather-forecast-grid">
+                        {weather.forecast.map((day, index) => (
+                          <div key={day.date}>
+                            <span>{getForecastDayLabel(day.date, index)}</span>
+                            <strong>{weatherEmoji(day.weatherCode)} {day.tempMax}°</strong>
+                            <small>Mín {day.tempMin}°</small>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : weatherError ? (
+                    <p>{weatherError}</p>
+                  ) : weatherLoading ? (
+                    <p>Cargando previsión…</p>
+                  ) : (
+                    <p>Cargando tiempo…</p>
+                  )}
+                </section>
+              ) : null}
 
-              <section className="glass-card widget-card form-widget">
-                <p className="eyebrow">Quick note</p>
-                <textarea className="note-input" value={note} onChange={(event) => void handleNoteChange(event.target.value)} placeholder="Escribe una nota rápida..." />
-              </section>
+              {widgetVisibility.noteWidget ? (
+                <section className="glass-card widget-card form-widget">
+                  <p className="eyebrow">Quick note</p>
+                  <textarea className="note-input" value={note} onChange={(event) => void handleNoteChange(event.target.value)} placeholder="Escribe una nota rápida..." />
+                </section>
+              ) : null}
+
 
               {editingBookmark ? (
                 <section className="glass-card widget-card form-widget">
@@ -1638,11 +1854,7 @@ function App() {
           </div>
         ) : null}
 
-        {toast ? (
-          <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite">
-            {toast.message}
-          </div>
-        ) : null}
+        <Toast toast={toast} />
       </section>
     </main>
   )
