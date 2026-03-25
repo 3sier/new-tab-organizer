@@ -1,4 +1,4 @@
-# Brave New Tab Organizer
+# New Tab Organizer
 
 A cleaner new tab page for Brave and Chrome focused on bookmark organization.
 
