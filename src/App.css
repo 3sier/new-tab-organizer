@@ -958,6 +958,18 @@
   color: #c6d0df;
 }
 
+.organize-done-button {
+  min-height: 42px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(124, 140, 255, 0.18);
+  color: #e6eaf2;
+}
+
+.organize-done-button:hover {
+  background: rgba(124, 140, 255, 0.28);
+}
+
 .wallpaper-actions {
   margin-top: 12px;
   display: grid;

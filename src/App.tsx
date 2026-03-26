@@ -1256,6 +1256,10 @@ function App() {
     resetDragState()
   }
 
+  const closeConfigPanel = () => {
+    setConfigPanelOpen(false)
+  }
+
   const exitOrganizeMode = () => {
     setOrganizeMode(false)
     setConfigPanelOpen(false)
@@ -1393,7 +1397,7 @@ function App() {
       const target = event.target
       if (!settingsPopoverRef.current) return
       if (target instanceof Node && !settingsPopoverRef.current.contains(target)) {
-        exitOrganizeMode()
+        closeConfigPanel()
       }
     }
 
@@ -1419,6 +1423,15 @@ function App() {
           <div className="topbar-spacer" />
           <div className="topbar-right">
             <div className="topbar-meta">{activeFolderLabel} · {visibleBookmarks.length} links</div>
+            {organizeMode ? (
+              <button
+                type="button"
+                className="secondary-button organize-done-button"
+                onClick={exitOrganizeMode}
+              >
+                Listo
+              </button>
+            ) : null}
             <div className="settings-popover-wrap" ref={settingsPopoverRef}>
               <button
                 type="button"
