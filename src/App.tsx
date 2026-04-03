@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent } from 'react'
+import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, WheelEvent } from 'react'
 import {
   closestCenter,
   DndContext,
@@ -155,6 +155,12 @@ type MoveTrayProps = {
   selectedFolderId: string
   activeFolderId?: string
   activeBookmarkTitle: string
+}
+
+type FolderScrollbarState = {
+  visible: boolean
+  thumbWidth: number
+  thumbOffset: number
 }
 
 const FALLBACK_TREE: BookmarkNode[] = [
@@ -581,6 +587,7 @@ function App() {
   const [search, setSearch] = useState('')
   const [searchResultIndex, setSearchResultIndex] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const folderRowRef = useRef<HTMLElement>(null)
   const settingsPopoverRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -611,6 +618,11 @@ function App() {
   const [activeFolderDragId, setActiveFolderDragId] = useState<string | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [wallpaperReady, setWallpaperReady] = useState(() => !getWallpaperPreviewFromLocalStorage())
+  const [folderScrollbar, setFolderScrollbar] = useState<FolderScrollbarState>({
+    visible: false,
+    thumbWidth: 0,
+    thumbOffset: 0,
+  })
 
   const canManageBookmarks = Boolean(browserChrome?.bookmarks)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
@@ -804,6 +816,55 @@ function App() {
     return quickLinks[Math.min(searchResultIndex, quickLinks.length - 1)] || null
   }, [search, quickLinks, searchResultIndex])
 
+  const updateFolderScrollbar = useCallback(() => {
+    const row = folderRowRef.current
+    if (!row) return
+
+    const maxScroll = row.scrollWidth - row.clientWidth
+    if (maxScroll <= 1) {
+      setFolderScrollbar((current) => (
+        current.visible || current.thumbWidth !== 0 || current.thumbOffset !== 0
+          ? { visible: false, thumbWidth: 0, thumbOffset: 0 }
+          : current
+      ))
+      return
+    }
+
+    const thumbWidth = Math.max(72, Math.round((row.clientWidth * row.clientWidth) / row.scrollWidth))
+    const maxOffset = Math.max(0, row.clientWidth - thumbWidth)
+    const thumbOffset = Math.round((row.scrollLeft / maxScroll) * maxOffset)
+
+    setFolderScrollbar((current) => (
+      current.visible === true
+      && current.thumbWidth === thumbWidth
+      && current.thumbOffset === thumbOffset
+        ? current
+        : { visible: true, thumbWidth, thumbOffset }
+    ))
+  }, [])
+
+  useEffect(() => {
+    const row = folderRowRef.current
+    if (!row) return undefined
+
+    updateFolderScrollbar()
+    row.addEventListener('scroll', updateFolderScrollbar, { passive: true })
+
+    const resizeObserver = new ResizeObserver(() => updateFolderScrollbar())
+    resizeObserver.observe(row)
+    window.addEventListener('resize', updateFolderScrollbar)
+
+    return () => {
+      row.removeEventListener('scroll', updateFolderScrollbar)
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', updateFolderScrollbar)
+    }
+  }, [updateFolderScrollbar])
+
+  useEffect(() => {
+    updateFolderScrollbar()
+  }, [updateFolderScrollbar, folders, organizeMode, editingFolderId, selectedFolderId, quickLinks.length])
+
   const handleOpenSearchResult = useCallback((bookmark: FlatBookmark) => {
     window.location.href = bookmark.url
   }, [])
@@ -849,23 +910,23 @@ function App() {
     window.location.href = buildBrowserSearchUrl(query)
   }, [openResultForActiveSearch, search])
 
-  const resetCreateForm = () => {
+  const resetCreateForm = useCallback(() => {
     setNewFolderName('')
     setNewBookmarkTitle('')
     setNewBookmarkUrl('')
     setFormError(null)
-  }
+  }, [])
 
-  const openCreateModal = (mode: CreateMode) => {
+  const openCreateModal = useCallback((mode: CreateMode) => {
     setCreateMode(mode)
     setCreateModalOpen(true)
     setFormError(null)
-  }
+  }, [])
 
-  const closeCreateModal = () => {
+  const closeCreateModal = useCallback(() => {
     setCreateModalOpen(false)
     resetCreateForm()
-  }
+  }, [resetCreateForm])
 
   const handleCreateFolder = async (event: FormEvent) => {
     event.preventDefault()
@@ -1260,13 +1321,65 @@ function App() {
     setConfigPanelOpen(false)
   }
 
-  const exitOrganizeMode = () => {
+  const handleFolderRowWheel = (event: WheelEvent<HTMLElement>) => {
+    const row = event.currentTarget
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+    if (row.scrollWidth <= row.clientWidth) return
+
+    row.scrollLeft += event.deltaY
+    event.preventDefault()
+  }
+
+  const handleFolderScrollbarTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return
+
+    const row = folderRowRef.current
+    if (!row) return
+
+    const maxScroll = row.scrollWidth - row.clientWidth
+    if (maxScroll <= 0) return
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const clickX = event.clientX - bounds.left
+    const maxOffset = Math.max(1, row.clientWidth - folderScrollbar.thumbWidth)
+    const centeredOffset = clickX - folderScrollbar.thumbWidth / 2
+    const nextOffset = Math.max(0, Math.min(maxOffset, centeredOffset))
+    row.scrollLeft = (nextOffset / maxOffset) * maxScroll
+  }
+
+  const handleFolderScrollbarThumbPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const row = folderRowRef.current
+    if (!row) return
+
+    event.preventDefault()
+
+    const startX = event.clientX
+    const startScrollLeft = row.scrollLeft
+    const maxScroll = row.scrollWidth - row.clientWidth
+    const maxOffset = Math.max(1, row.clientWidth - folderScrollbar.thumbWidth)
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - startX
+      const nextScrollLeft = startScrollLeft + (deltaX / maxOffset) * maxScroll
+      row.scrollLeft = Math.max(0, Math.min(maxScroll, nextScrollLeft))
+    }
+
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+  }
+
+  const exitOrganizeMode = useCallback(() => {
     setOrganizeMode(false)
     setConfigPanelOpen(false)
     setEditingFolderId(null)
     setEditingBookmark(null)
     setFormError(null)
-  }
+  }, [])
 
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
@@ -1554,28 +1667,49 @@ function App() {
           onDragEnd={(event) => void handleDragEnd(event)}
         >
           <SortableContext items={folders.map((folder) => `folder-sort-${folder.id}`)} strategy={horizontalListSortingStrategy}>
-            <section className={`folder-row ${activeBookmarkDrag ? 'is-dragging-bookmark' : ''} ${activeFolderDragId ? 'is-dragging-folder' : ''}`}>
-              {folders.map((folder) => (
-                <FolderPill
-                  key={folder.id}
-                  folder={folder}
-                  isActive={selectedFolderId === folder.id}
-                  canManageBookmarks={canManageBookmarks}
-                  organizeMode={organizeMode}
-                  isEditing={editingFolderId === folder.id}
-                  editingFolderTitle={editingFolderTitle}
-                  onSelect={setSelectedFolderId}
-                  onStartRename={startRenameFolder}
-                  onDelete={(id, title) => void handleDeleteFolder(id, title)}
-                  onRenameSubmit={(event) => void handleRenameFolder(event)}
-                  onRenameChange={setEditingFolderTitle}
-                  onRenameCancel={() => setEditingFolderId(null)}
-                />
-              ))}
-              <button type="button" className="folder-add-pill" onClick={() => openCreateModal('bookmark')} title="Añadir">
-                +
-              </button>
-            </section>
+            <div className="folder-row-shell">
+              <section
+                ref={folderRowRef}
+                className={`folder-row ${activeBookmarkDrag ? 'is-dragging-bookmark' : ''} ${activeFolderDragId ? 'is-dragging-folder' : ''}`}
+                onWheel={handleFolderRowWheel}
+              >
+                {folders.map((folder) => (
+                  <FolderPill
+                    key={folder.id}
+                    folder={folder}
+                    isActive={selectedFolderId === folder.id}
+                    canManageBookmarks={canManageBookmarks}
+                    organizeMode={organizeMode}
+                    isEditing={editingFolderId === folder.id}
+                    editingFolderTitle={editingFolderTitle}
+                    onSelect={setSelectedFolderId}
+                    onStartRename={startRenameFolder}
+                    onDelete={(id, title) => void handleDeleteFolder(id, title)}
+                    onRenameSubmit={(event) => void handleRenameFolder(event)}
+                    onRenameChange={setEditingFolderTitle}
+                    onRenameCancel={() => setEditingFolderId(null)}
+                  />
+                ))}
+                <button type="button" className="folder-add-pill" onClick={() => openCreateModal('bookmark')} title="Añadir">
+                  +
+                </button>
+              </section>
+
+              {folderScrollbar.visible ? (
+                <div className="folder-row-scrollbar" onPointerDown={handleFolderScrollbarTrackPointerDown}>
+                  <button
+                    type="button"
+                    className="folder-row-scrollbar-thumb"
+                    style={{
+                      width: `${folderScrollbar.thumbWidth}px`,
+                      transform: `translateX(${folderScrollbar.thumbOffset}px)`,
+                    }}
+                    aria-label="Desplazar carpetas"
+                    onPointerDown={handleFolderScrollbarThumbPointerDown}
+                  />
+                </div>
+              ) : null}
+            </div>
           </SortableContext>
 
           <section className="content-grid">
