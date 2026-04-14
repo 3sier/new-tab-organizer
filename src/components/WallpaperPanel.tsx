@@ -4,7 +4,7 @@ import { type WallpaperPreset } from '../lib/wallpaper'
 type WallpaperPanelProps = {
   wallpaper: string
   wallpaperBlur: number
-  wallpapers: WallpaperPreset[]
+  wallpapers: readonly WallpaperPreset[]
   isCustomWallpaper: boolean
   onSelectPreset: (presetId: string) => void
   onUpload: (event: ChangeEvent<HTMLInputElement>) => void

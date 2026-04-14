@@ -5,7 +5,6 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -16,13 +15,21 @@ import {
   arrayMove,
   horizontalListSortingStrategy,
   rectSortingStrategy,
-  useSortable,
 } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import './App.css'
 import { SearchBar } from './components/SearchBar'
 import { Toast } from './components/Toast'
-import { WallpaperPanel } from './components/WallpaperPanel'
+import { ShortcutCard } from './components/ShortcutCard'
+import { FolderPill } from './components/FolderPill'
+import { MoveTray } from './components/MoveTray'
+import { NoteWidget } from './components/NoteWidget'
+import { PinnedWidget } from './components/PinnedWidget'
+import { WeatherWidget } from './components/WeatherWidget'
+import { SettingsPopover } from './components/SettingsPopover'
+import { CreateDialog } from './components/CreateDialog'
+import { EditDialog } from './components/EditDialog'
+import { useClock } from './hooks/useClock'
+import { useWeather } from './hooks/useWeather'
 import {
   buildBrowserSearchUrl,
   bookmarkHost,
@@ -53,202 +60,35 @@ import {
   createOptimizedWallpaperDataUrl,
   readFileAsDataUrl,
 } from './lib/image'
-
-type BookmarkNode = chrome.bookmarks.BookmarkTreeNode
-
-type CreateMode = 'folder' | 'bookmark'
-type ToastTone = 'success' | 'error' | 'info'
-
-type WeatherData = {
-  city: string
-  temperature: number
-  weatherCode: number
-  tempMax: number
-  tempMin: number
-  forecast: {
-    date: string
-    weatherCode: number
-    tempMax: number
-    tempMin: number
-  }[]
-}
-
-type WidgetVisibility = {
-  wallpaperPanel: boolean
-  weatherWidget: boolean
-  pinnedWidget: boolean
-  noteWidget: boolean
-}
-
-type ConfigPayload = {
-  version: number
-  exportedAt: string
-  app: string
-  config: {
-    wallpaper: string
-    wallpaperBlur: number
-    note: string
-    weatherCity: string
-    pinnedBookmarks: string[]
-    selectedFolder: string
-    widgetVisibility: WidgetVisibility
-  }
-}
-
-type ToastState = {
-  id: number
-  message: string
-  tone: ToastTone
-}
-
-type FlatBookmark = {
-  id: string
-  title: string
-  url: string
-  parentId?: string
-  parentTitle?: string
-}
-
-type FolderItem = {
-  id: string
-  title: string
-  childrenCount: number
-}
-
-type EditingBookmarkState = {
-  id: string
-  title: string
-  url: string
-  parentId?: string
-}
-
-type ShortcutCardProps = {
-  bookmark: FlatBookmark
-  canManageBookmarks: boolean
-  isPinned: boolean
-  organizeMode: boolean
-  sortable: boolean
-  isHighlighted: boolean
-  onDelete: (id: string) => void
-  onEdit: (bookmark: FlatBookmark) => void
-  onTogglePin: (bookmarkId: string) => void
-  onHover: () => void
-}
-
-type FolderPillProps = {
-  folder: FolderItem
-  isActive: boolean
-  canManageBookmarks: boolean
-  organizeMode: boolean
-  isEditing: boolean
-  editingFolderTitle: string
-  onSelect: (id: string) => void
-  onStartRename: (folder: FolderItem) => void
-  onDelete: (id: string, title: string) => void
-  onRenameSubmit: (event: FormEvent) => void
-  onRenameChange: (value: string) => void
-  onRenameCancel: () => void
-}
-
-type MoveTrayProps = {
-  folders: FolderItem[]
-  selectedFolderId: string
-  activeFolderId?: string
-  activeBookmarkTitle: string
-}
-
-type FolderScrollbarState = {
-  visible: boolean
-  thumbWidth: number
-  thumbOffset: number
-}
-
-const FALLBACK_TREE: BookmarkNode[] = [
-  {
-    id: 'root',
-    title: 'Bookmarks',
-    dateAdded: Date.now(),
-    children: [
-      {
-        id: 'work',
-        title: 'Work',
-        dateAdded: Date.now(),
-        children: [
-          { id: '1', title: 'GitHub', url: 'https://github.com', dateAdded: Date.now() },
-          { id: '2', title: 'Figma', url: 'https://figma.com', dateAdded: Date.now() },
-          { id: '3', title: 'Linear', url: 'https://linear.app', dateAdded: Date.now() },
-        ],
-      },
-      {
-        id: 'design',
-        title: 'Design',
-        dateAdded: Date.now(),
-        children: [
-          { id: '4', title: 'Dribbble', url: 'https://dribbble.com', dateAdded: Date.now() },
-          { id: '5', title: 'Awwwards', url: 'https://awwwards.com', dateAdded: Date.now() },
-          { id: '6', title: 'Behance', url: 'https://behance.net', dateAdded: Date.now() },
-        ],
-      },
-    ],
-  } as BookmarkNode,
-]
-
-function isFolder(node: BookmarkNode) {
-  return !node.url
-}
-
-function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim()
-  if (!trimmed) return ''
-
-  const withProtocol = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
-
-  try {
-    const parsed = new URL(withProtocol)
-    if (!parsed.hostname.includes('.')) return ''
-    return parsed.toString()
-  } catch {
-    return ''
-  }
-}
-
-function flattenBookmarks(nodes: BookmarkNode[] | undefined, parentId?: string, parentTitle?: string): FlatBookmark[] {
-  if (!nodes) return []
-
-  return nodes.flatMap((node) => {
-    if (node.url) {
-      return [{ id: node.id, title: node.title || node.url, url: node.url, parentId, parentTitle }]
-    }
-
-    return flattenBookmarks(node.children, node.id, node.title)
-  })
-}
-
-function collectFolders(nodes: BookmarkNode[] | undefined): FolderItem[] {
-  if (!nodes) return []
-
-  return nodes.flatMap((node) => {
-    if (!isFolder(node)) return []
-
-    const current = node.id === '0' || node.id === '1' || node.id === '2'
-      ? []
-      : [{ id: node.id, title: node.title || 'Untitled folder', childrenCount: node.children?.length ?? 0 }]
-
-    return [...current, ...collectFolders(node.children)]
-  })
-}
-
-function findFolderById(nodes: BookmarkNode[] | undefined, folderId: string): BookmarkNode | null {
-  if (!nodes) return null
-
-  for (const node of nodes) {
-    if (node.id === folderId && isFolder(node)) return node
-    const nested = findFolderById(node.children, folderId)
-    if (nested) return nested
-  }
-
-  return null
-}
+import {
+  collectFolders,
+  FALLBACK_TREE,
+  findFolderById,
+  flattenBookmarks,
+  getFavicon,
+  normalizeUrl,
+} from './lib/bookmarks'
+import type {
+  BookmarkNode,
+  CreateMode,
+  EditingBookmarkState,
+  FlatBookmark,
+  FolderItem,
+  FolderScrollbarState,
+  ToastState,
+  ToastTone,
+  WidgetVisibility,
+} from './types'
+import { DEFAULT_WIDGET_VISIBILITY } from './types'
+import {
+  buildExportPayload,
+  buildBookmarkUrlIndex,
+  normalizeForMatch,
+  parseConfigPayload,
+  resolveImportedRefs,
+  type ConfigPayload,
+  type ExportedNode,
+} from './lib/config'
 
 function getGreeting(hour: number) {
   if (hour < 6) return 'Buenas noches'
@@ -257,104 +97,11 @@ function getGreeting(hour: number) {
   return 'Buenas noches'
 }
 
-function getFavicon(url: string) {
-  try {
-    const domain = new URL(url).hostname
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
-  } catch {
-    return ''
-  }
-}
-
-function weatherLabel(code: number) {
-  if (code === 0) return 'Despejado'
-  if ([1, 2, 3].includes(code)) return 'Nubes'
-  if ([45, 48].includes(code)) return 'Niebla'
-  if ([51, 53, 55, 56, 57].includes(code)) return 'Llovizna'
-  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Lluvia'
-  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Nieve'
-  if ([95, 96, 99].includes(code)) return 'Tormenta'
-  return 'Variable'
-}
-
-function weatherEmoji(code: number) {
-  if (code === 0) return '☀️'
-  if ([1, 2, 3].includes(code)) return '⛅'
-  if ([45, 48].includes(code)) return '🌫️'
-  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return '🌧️'
-  if ([71, 73, 75, 77, 85, 86].includes(code)) return '❄️'
-  if ([95, 96, 99].includes(code)) return '⛈️'
-  return '🌤️'
-}
-
-const CONFIG_EXPORT_VERSION = 1
-const CONFIG_APP_LABEL = 'Brave New Tab Organizer'
-const DEFAULT_WIDGET_VISIBILITY: WidgetVisibility = {
-  wallpaperPanel: true,
-  weatherWidget: true,
-  pinnedWidget: true,
-  noteWidget: true,
-}
 const WIDGET_VISIBILITY_STORAGE_KEYS: Record<keyof WidgetVisibility, string> = {
   wallpaperPanel: STORAGE_KEYS.widgetShowWallpaperPanel,
   weatherWidget: STORAGE_KEYS.widgetShowWeatherWidget,
   pinnedWidget: STORAGE_KEYS.widgetShowPinnedWidget,
   noteWidget: STORAGE_KEYS.widgetShowNoteWidget,
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
-
-function isWidgetVisibility(value: unknown): value is WidgetVisibility {
-  if (!isRecord(value)) return false
-  return (
-    typeof value.wallpaperPanel === 'boolean' &&
-    typeof value.weatherWidget === 'boolean' &&
-    typeof value.pinnedWidget === 'boolean' &&
-    typeof value.noteWidget === 'boolean'
-  )
-}
-
-function normalizeConfigPayload(raw: unknown): ConfigPayload | null {
-  const data = isRecord(raw) && isRecord(raw.config) ? raw.config : raw
-  if (!isRecord(data)) return null
-
-  const wallpaper = data.wallpaper
-  const wallpaperBlur = data.wallpaperBlur
-  const note = data.note
-  const weatherCity = data.weatherCity
-  const pinnedBookmarks = data.pinnedBookmarks
-  const selectedFolder = data.selectedFolder
-  const widgetVisibility = data.widgetVisibility
-  const hasBasicFields = (
-    typeof wallpaper === 'string'
-    && typeof note === 'string'
-    && typeof weatherCity === 'string'
-    && isStringArray(pinnedBookmarks)
-    && typeof selectedFolder === 'string'
-  )
-
-  if (!hasBasicFields || !isWidgetVisibility(widgetVisibility)) return null
-
-  return {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    app: CONFIG_APP_LABEL,
-    config: {
-      wallpaper,
-      wallpaperBlur: typeof wallpaperBlur === 'number' && Number.isFinite(wallpaperBlur) ? wallpaperBlur : 0,
-      note,
-      weatherCity,
-      pinnedBookmarks,
-      selectedFolder,
-      widgetVisibility,
-    },
-  }
 }
 
 function isTypingTarget(element: EventTarget | null): boolean {
@@ -363,223 +110,6 @@ function isTypingTarget(element: EventTarget | null): boolean {
   return element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT'
 }
 
-async function fetchWeather(city: string): Promise<WeatherData> {
-  const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=es&format=json`)
-  const geoJson = await geoRes.json()
-  const place = geoJson?.results?.[0]
-
-  if (!place) {
-    throw new Error('Ciudad no encontrada')
-  }
-
-  const weatherRes = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3`,
-  )
-  const weatherJson = await weatherRes.json()
-
-  return {
-    city: place.name,
-    temperature: Math.round(weatherJson.current.temperature_2m),
-    weatherCode: weatherJson.current.weather_code,
-    tempMax: Math.round(weatherJson.daily.temperature_2m_max[0]),
-    tempMin: Math.round(weatherJson.daily.temperature_2m_min[0]),
-    forecast: weatherJson.daily.time.map((date: string, index: number) => ({
-      date,
-      weatherCode: weatherJson.daily.weather_code[index],
-      tempMax: Math.round(weatherJson.daily.temperature_2m_max[index]),
-      tempMin: Math.round(weatherJson.daily.temperature_2m_min[index]),
-    })),
-  }
-}
-
-function getForecastDayLabel(date: string, index: number) {
-  if (index === 0) return 'Hoy'
-  if (index === 1) return 'Mañana'
-
-  return new Date(date).toLocaleDateString('es-ES', { weekday: 'short' })
-}
-
-function ShortcutCard({
-  bookmark,
-  canManageBookmarks,
-  isPinned,
-  organizeMode,
-  sortable,
-  isHighlighted,
-  onDelete,
-  onEdit,
-  onTogglePin,
-  onHover,
-}: ShortcutCardProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: bookmark.id,
-    disabled: !organizeMode || !sortable,
-    data: { type: 'bookmark', bookmark },
-  })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.55 : 1,
-  }
-
-  return (
-    <article
-      ref={setNodeRef}
-      style={style}
-      className={`shortcut-card ${organizeMode ? 'is-organize' : ''} ${isHighlighted ? 'is-search-highlight' : ''}`}
-      onMouseEnter={onHover}
-    >
-      {organizeMode ? (
-        <button type="button" className="drag-handle always-visible" aria-label={`Mover ${bookmark.title}`} {...attributes} {...listeners}>
-          ⋮⋮
-        </button>
-      ) : null}
-
-      <button
-        type="button"
-        className={`pin-chip ${isPinned ? 'is-active' : ''} ${canManageBookmarks && organizeMode ? 'is-organize-offset' : ''}`}
-        onClick={() => onTogglePin(bookmark.id)}
-        title={isPinned ? 'Quitar de fijados' : 'Fijar marcador'}
-        aria-label={isPinned ? `Quitar ${bookmark.title} de fijados` : `Fijar ${bookmark.title}`}
-      >
-        {isPinned ? '★' : '☆'}
-      </button>
-
-      <a href={bookmark.url} className="shortcut-link">
-        <div className="shortcut-icon">
-          {getFavicon(bookmark.url) ? <img src={getFavicon(bookmark.url)} alt="" /> : <span>{bookmarkHost(bookmark.url).slice(0, 1).toUpperCase()}</span>}
-        </div>
-        <div className="shortcut-copy">
-          <strong>{bookmark.title}</strong>
-          <small>{bookmarkHost(bookmark.url)}</small>
-        </div>
-      </a>
-
-      {canManageBookmarks && organizeMode ? (
-        <div className="shortcut-actions visible-actions">
-          <button type="button" className="icon-chip" onClick={() => onEdit(bookmark)} title="Editar marcador">✎</button>
-          <button type="button" className="delete-chip" onClick={() => onDelete(bookmark.id)} title="Borrar marcador">×</button>
-        </div>
-      ) : null}
-    </article>
-  )
-}
-
-function FolderPill(props: FolderPillProps) {
-  const {
-    folder,
-    isActive,
-    canManageBookmarks,
-    organizeMode,
-    isEditing,
-    editingFolderTitle,
-    onSelect,
-    onStartRename,
-    onDelete,
-    onRenameSubmit,
-    onRenameChange,
-    onRenameCancel,
-  } = props
-
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: `folder-sort-${folder.id}`,
-    disabled: !organizeMode,
-    data: { type: 'folder', folderId: folder.id },
-  })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.55 : 1,
-  }
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`folder-pill folder-pill-group ${isActive ? 'is-active' : ''} ${organizeMode ? 'is-organize' : ''}`}
-    >
-      {organizeMode ? (
-        <button type="button" className="folder-drag-handle always-visible" aria-label={`Mover carpeta ${folder.title}`} {...attributes} {...listeners}>
-          ⋮⋮
-        </button>
-      ) : null}
-
-      {isEditing ? (
-        <form className="folder-rename-form" onSubmit={onRenameSubmit}>
-          <input value={editingFolderTitle} onChange={(event) => onRenameChange(event.target.value)} autoFocus />
-          <button type="submit" className="folder-mini-action">✓</button>
-          <button type="button" className="folder-mini-action" onClick={onRenameCancel}>×</button>
-        </form>
-      ) : (
-        <>
-          <button type="button" className="folder-pill-main" onClick={() => onSelect(folder.id)}>
-            <span className="folder-pill-title">{folder.title}</span>
-            <span>{folder.childrenCount}</span>
-          </button>
-          {canManageBookmarks && organizeMode ? (
-            <>
-              <button type="button" className="folder-pill-icon" onClick={() => onStartRename(folder)} aria-label={`Renombrar carpeta ${folder.title}`} title={`Renombrar carpeta ${folder.title}`}>✎</button>
-              <button type="button" className="folder-pill-delete" onClick={() => onDelete(folder.id, folder.title)} aria-label={`Borrar carpeta ${folder.title}`} title={`Borrar carpeta ${folder.title}`}>×</button>
-            </>
-          ) : null}
-        </>
-      )}
-    </div>
-  )
-}
-
-function MoveTrayFolderTarget({
-  folder,
-  isCurrent,
-  isHighlighted,
-}: {
-  folder: FolderItem
-  isCurrent: boolean
-  isHighlighted: boolean
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `move-folder-${folder.id}`,
-    disabled: isCurrent,
-    data: { type: 'move-folder', folderId: folder.id },
-  })
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      className={`move-tray-target ${isCurrent ? 'is-current' : ''} ${isHighlighted || isOver ? 'is-highlighted' : ''}`}
-      disabled={isCurrent}
-    >
-      <span className="move-tray-target-label">{folder.title}</span>
-      <span className="move-tray-target-meta">{isCurrent ? 'Carpeta actual' : `${folder.childrenCount} links`}</span>
-    </button>
-  )
-}
-
-function MoveTray({ folders, selectedFolderId, activeFolderId, activeBookmarkTitle }: MoveTrayProps) {
-  return (
-    <div className="move-tray glass-card" aria-live="polite">
-      <div className="move-tray-copy">
-        <p className="eyebrow">Mover marcador</p>
-        <h3>{activeBookmarkTitle}</h3>
-        <p>Suelta en una carpeta para moverlo. Si lo sueltas en la cuadrícula, solo reordena dentro de {activeFolderId === selectedFolderId ? 'la carpeta actual' : 'la vista activa'}.</p>
-      </div>
-
-      <div className="move-tray-grid">
-        {folders.map((folder) => (
-          <MoveTrayFolderTarget
-            key={folder.id}
-            folder={folder}
-            isCurrent={folder.id === selectedFolderId}
-            isHighlighted={false}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
 
 function App() {
   const [tree, setTree] = useState<BookmarkNode[]>([])
@@ -603,12 +133,10 @@ function App() {
   const [editingBookmark, setEditingBookmark] = useState<EditingBookmarkState | null>(null)
   const [weatherCity, setWeatherCity] = useState('Madrid')
   const [weatherDraft, setWeatherDraft] = useState('Madrid')
-  const [weather, setWeather] = useState<WeatherData | null>(null)
-  const [weatherError, setWeatherError] = useState<string | null>(null)
-  const [weatherLoading, setWeatherLoading] = useState(false)
+  const { weather, error: weatherError, loading: weatherLoading, setError: setWeatherError } = useWeather(weatherCity)
   const [weatherEditorOpen, setWeatherEditorOpen] = useState(false)
   const [configPanelOpen, setConfigPanelOpen] = useState(false)
-  const [now, setNow] = useState(() => new Date())
+  const now = useClock()
   const [wallpaper, setWallpaper] = useState(getInitialWallpaper)
   const [wallpaperBlur, setWallpaperBlur] = useState(0)
   const [widgetVisibility, setWidgetVisibility] = useState<WidgetVisibility>(DEFAULT_WIDGET_VISIBILITY)
@@ -637,11 +165,6 @@ function App() {
     const timeout = window.setTimeout(() => setToast(null), 2800)
     return () => window.clearTimeout(timeout)
   }, [toast])
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setNow(new Date()), 30_000)
-    return () => window.clearInterval(interval)
-  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -696,23 +219,7 @@ function App() {
     })()
   }, [])
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        setWeatherLoading(true)
-        setWeatherError(null)
-        const data = await fetchWeather(weatherCity)
-        setWeather(data)
-      } catch {
-        setWeather(null)
-        setWeatherError('No se pudo cargar el tiempo')
-      } finally {
-        setWeatherLoading(false)
-      }
-    })()
-  }, [weatherCity])
-
-  const loadBookmarks = useCallback(async () => {
+  const loadBookmarks = useCallback(async (): Promise<BookmarkNode[]> => {
     setLoading(true)
     setError(null)
 
@@ -720,13 +227,15 @@ function App() {
       if (browserChrome?.bookmarks?.getTree) {
         const root = await browserChrome.bookmarks.getTree()
         setTree(root)
-      } else {
-        setTree(FALLBACK_TREE)
+        return root
       }
+      setTree(FALLBACK_TREE)
+      return FALLBACK_TREE
     } catch (err) {
       setError('No se pudieron cargar los marcadores.')
       setTree(FALLBACK_TREE)
       console.error(err)
+      return FALLBACK_TREE
     } finally {
       setLoading(false)
     }
@@ -1105,20 +614,16 @@ function App() {
 
   const handleExportConfig = async () => {
     const wallpaperValue = await getStoredWallpaper().catch(() => wallpaper)
-    const payload: ConfigPayload = {
-      version: CONFIG_EXPORT_VERSION,
-      exportedAt: new Date().toISOString(),
-      app: CONFIG_APP_LABEL,
-      config: {
-        wallpaper: wallpaperValue,
-        wallpaperBlur,
-        note,
-        weatherCity,
-        pinnedBookmarks: pinnedBookmarkIds,
-        selectedFolder: selectedFolderId,
-        widgetVisibility,
-      },
-    }
+    const payload = buildExportPayload({
+      wallpaper: wallpaperValue,
+      wallpaperBlur,
+      note,
+      weatherCity,
+      pinnedBookmarkIds,
+      selectedFolderId,
+      widgetVisibility,
+      tree,
+    })
 
     downloadConfig(payload)
     pushToast('Configuración exportada')
@@ -1130,35 +635,26 @@ function App() {
 
     try {
       const raw = await file.text()
-      const parsed = JSON.parse(raw)
-      const normalized = normalizeConfigPayload(parsed)
+      const parsed = parseConfigPayload(JSON.parse(raw))
 
-      if (!normalized) {
+      if (!parsed) {
         throw new Error('Formato de configuración incorrecto')
       }
 
-      const imported = normalized.config
-      const nextPinned = imported.pinnedBookmarks
       const nextWidgetVisibility = {
         ...widgetVisibility,
-        ...imported.widgetVisibility,
+        ...parsed.widgetVisibility,
       }
 
-      setWallpaperBlur(Math.max(0, Math.min(Math.round(imported.wallpaperBlur), 40)))
-      await storageSet(STORAGE_KEYS.wallpaperBlur, Math.max(0, Math.min(Math.round(imported.wallpaperBlur), 40)))
+      setWallpaperBlur(parsed.wallpaperBlur)
+      await storageSet(STORAGE_KEYS.wallpaperBlur, parsed.wallpaperBlur)
 
-      setNote(imported.note)
-      await storageSet(STORAGE_KEYS.note, imported.note)
+      setNote(parsed.note)
+      await storageSet(STORAGE_KEYS.note, parsed.note)
 
-      setWeatherCity(imported.weatherCity)
-      setWeatherDraft(imported.weatherCity)
-      await storageSet(STORAGE_KEYS.weatherCity, imported.weatherCity)
-
-      setPinnedBookmarkIds(nextPinned)
-      await storageSet(STORAGE_KEYS.pinnedBookmarks, nextPinned)
-
-      setSelectedFolderId(imported.selectedFolder)
-      await persistSelectedFolder(imported.selectedFolder)
+      setWeatherCity(parsed.weatherCity)
+      setWeatherDraft(parsed.weatherCity)
+      await storageSet(STORAGE_KEYS.weatherCity, parsed.weatherCity)
 
       setWidgetVisibility(nextWidgetVisibility)
       await Promise.all(Object.keys(nextWidgetVisibility).map((key) => storageSet(
@@ -1167,13 +663,89 @@ function App() {
       )))
 
       setWallpaperReady(false)
-      await setStoredWallpaper(imported.wallpaper)
-      const resolvedWallpaper = await getStoredWallpaper().catch(() => imported.wallpaper)
-      setWallpaper(resolvedWallpaper || imported.wallpaper)
+      await setStoredWallpaper(parsed.wallpaper)
+      const resolvedWallpaper = await getStoredWallpaper().catch(() => parsed.wallpaper)
+      setWallpaper(resolvedWallpaper || parsed.wallpaper)
       setWallpaperReady(true)
 
-      await loadBookmarks()
-      pushToast('Configuración importada')
+      let freshTree = await loadBookmarks()
+      const counts = { folders: 0, bookmarks: 0 }
+
+      if (browserChrome?.bookmarks?.create && parsed.bookmarksTree.length) {
+        const urlIndex = buildBookmarkUrlIndex(freshTree)
+
+        const processChildren = async (nodes: ExportedNode[], parentId: string) => {
+          const existing = await browserChrome.bookmarks.getChildren(parentId)
+          const folderByTitle = new Map<string, chrome.bookmarks.BookmarkTreeNode>()
+          for (const e of existing) {
+            if (!e.url) folderByTitle.set(e.title, e)
+          }
+
+          for (const child of nodes) {
+            if (child.type === 'folder') {
+              let match = folderByTitle.get(child.title)
+              if (!match) {
+                try {
+                  match = await browserChrome.bookmarks.create({ parentId, title: child.title })
+                  counts.folders += 1
+                  folderByTitle.set(child.title, match)
+                } catch (err) {
+                  console.error('No se pudo crear carpeta importada', child.title, err)
+                  continue
+                }
+              }
+              await processChildren(child.children, match.id)
+            } else {
+              const key = normalizeForMatch(child.url)
+              if (urlIndex.has(key)) continue
+              try {
+                await browserChrome.bookmarks.create({
+                  parentId,
+                  title: child.title || child.url,
+                  url: child.url,
+                })
+                urlIndex.set(key, 'imported')
+                counts.bookmarks += 1
+              } catch (err) {
+                console.error('No se pudo crear marcador importado', child.url, err)
+              }
+            }
+          }
+        }
+
+        for (const root of parsed.bookmarksTree) {
+          const rootExists = Boolean(findFolderById(freshTree, root.rootId))
+          const targetId = rootExists ? root.rootId : '1'
+          await processChildren(root.children, targetId)
+        }
+
+        if (counts.folders || counts.bookmarks) {
+          freshTree = await loadBookmarks()
+        }
+      }
+
+      const resolved = resolveImportedRefs(parsed, freshTree, selectedFolderId)
+
+      setPinnedBookmarkIds(resolved.pinnedBookmarkIds)
+      await storageSet(STORAGE_KEYS.pinnedBookmarks, resolved.pinnedBookmarkIds)
+
+      if (resolved.selectedFolderId) {
+        setSelectedFolderId(resolved.selectedFolderId)
+        await persistSelectedFolder(resolved.selectedFolderId)
+      }
+
+      const missingPins = parsed.pinnedBookmarks.length - resolved.pinnedBookmarkIds.length
+      const folderMissing = parsed.selectedFolderPath.length > 0 && !resolved.selectedFolderId
+      const notes: string[] = []
+      if (counts.folders) notes.push(`${counts.folders} carpeta(s) creadas`)
+      if (counts.bookmarks) notes.push(`${counts.bookmarks} marcador(es) creados`)
+      if (missingPins > 0) notes.push(`${missingPins} pin(s) no resueltos`)
+      if (folderMissing) notes.push('carpeta activa no encontrada')
+      if (notes.length) {
+        pushToast(`Configuración importada (${notes.join(', ')})`, 'info')
+      } else {
+        pushToast('Configuración importada')
+      }
     } catch (error) {
       console.error('No se pudo importar la configuración', error)
       pushToast('No se pudo importar la configuración', 'error')
@@ -1494,6 +1066,7 @@ function App() {
     organizeMode,
     weatherEditorOpen,
     weatherCity,
+    setWeatherError,
     closeCreateModal,
     exitOrganizeMode,
     search,
@@ -1545,102 +1118,31 @@ function App() {
                 Listo
               </button>
             ) : null}
-            <div className="settings-popover-wrap" ref={settingsPopoverRef}>
-              <button
-                type="button"
-                className={`settings-gear ${configPanelOpen ? 'is-active' : ''}`}
-                onClick={() => {
-                  if (configPanelOpen) {
-                    exitOrganizeMode()
-                    return
-                  }
-                  setConfigPanelOpen(true)
-                  setOrganizeMode(true)
-                }}
-                aria-label="Abrir ajustes"
-                aria-expanded={configPanelOpen}
-              >
-                <span className="settings-gear-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
-                    <path
-                      d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"
-                      fill="currentColor"
-                    />
-                    <path
-                      d="M19.4 12a7.05 7.05 0 0 0 .05-.96 7.05 7.05 0 0 0-.05-.96l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1c-.5-.4-1.04-.72-1.64-.96l-.38-2.65A.5.5 0 0 0 14 1.5h-4a.5.5 0 0 0-.5.43l-.38 2.65a7.1 7.1 0 0 0-1.64.96l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.05 7.05 0 0 0-.05.96 7.05 7.05 0 0 0 .05.96l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.15.26.48.36.75.22l2.49-1a7.1 7.1 0 0 0 1.64.96l.38 2.65a.5.5 0 0 0 .5.43h4a.5.5 0 0 0 .5-.43l.38-2.65a7.1 7.1 0 0 0 1.64-.96l2.49 1c.27.1.6 0 .75-.22l2-3.46a.5.5 0 0 0-.12-.64L19.4 12Z"
-                      fill="currentColor"
-                      opacity="0.7"
-                    />
-                  </svg>
-                </span>
-              </button>
-
-              {configPanelOpen ? (
-                <section className="settings-popover glass-card widget-card form-widget config-panel-card">
-                  <p className="eyebrow">Configuración</p>
-                  <h3>Ajustes y widgets</h3>
-                  <p>Personaliza la vista y gestiona exportación, importación y widgets.</p>
-
-                  <div className="config-actions">
-                    <button type="button" className="secondary-button" onClick={() => void handleExportConfig()}>
-                      Exportar configuración
-                    </button>
-                    <label className="upload-button">
-                      <input type="file" accept="application/json" onChange={(event) => void handleImportConfig(event)} />
-                      Importar configuración
-                    </label>
-                  </div>
-
-                  {organizeMode && widgetVisibility.wallpaperPanel ? (
-                    <WallpaperPanel
-                      wallpaper={wallpaper}
-                      wallpaperBlur={wallpaperBlur}
-                      wallpapers={WALLPAPER_PRESETS}
-                      isCustomWallpaper={isCustomWallpaper(wallpaper)}
-                      onSelectPreset={handleWallpaperPreset}
-                      onUpload={handleWallpaperChange}
-                      onReset={handleWallpaperReset}
-                      onBlurChange={handleWallpaperBlurChange}
-                    />
-                  ) : null}
-
-                  <div className="widget-toggle-list">
-                    <label className="widget-toggle">
-                      <input
-                        type="checkbox"
-                        checked={widgetVisibility.wallpaperPanel}
-                        onChange={(event) => void handleWidgetVisibilityChange('wallpaperPanel', event.target.checked)}
-                      />
-                      <span>Mostrar panel de wallpaper en organizar</span>
-                    </label>
-                    <label className="widget-toggle">
-                      <input
-                        type="checkbox"
-                        checked={widgetVisibility.weatherWidget}
-                        onChange={(event) => void handleWidgetVisibilityChange('weatherWidget', event.target.checked)}
-                      />
-                      <span>Mostrar widget del tiempo</span>
-                    </label>
-                    <label className="widget-toggle">
-                      <input
-                        type="checkbox"
-                        checked={widgetVisibility.pinnedWidget}
-                        onChange={(event) => void handleWidgetVisibilityChange('pinnedWidget', event.target.checked)}
-                      />
-                      <span>Mostrar widget fijados</span>
-                    </label>
-                    <label className="widget-toggle">
-                      <input
-                        type="checkbox"
-                        checked={widgetVisibility.noteWidget}
-                        onChange={(event) => void handleWidgetVisibilityChange('noteWidget', event.target.checked)}
-                      />
-                      <span>Mostrar nota rápida</span>
-                    </label>
-                  </div>
-                </section>
-              ) : null}
-            </div>
+            <SettingsPopover
+              containerRef={settingsPopoverRef}
+              open={configPanelOpen}
+              organizeMode={organizeMode}
+              wallpaper={wallpaper}
+              wallpaperBlur={wallpaperBlur}
+              wallpapers={WALLPAPER_PRESETS}
+              isCustomWallpaper={isCustomWallpaper(wallpaper)}
+              widgetVisibility={widgetVisibility}
+              onToggleOpen={() => {
+                if (configPanelOpen) {
+                  exitOrganizeMode()
+                  return
+                }
+                setConfigPanelOpen(true)
+                setOrganizeMode(true)
+              }}
+              onExport={() => void handleExportConfig()}
+              onImport={(event) => void handleImportConfig(event)}
+              onSelectWallpaperPreset={handleWallpaperPreset}
+              onUploadWallpaper={handleWallpaperChange}
+              onResetWallpaper={handleWallpaperReset}
+              onWallpaperBlurChange={handleWallpaperBlurChange}
+              onWidgetVisibilityChange={(key, value) => void handleWidgetVisibilityChange(key, value)}
+            />
           </div>
         </header>
 
@@ -1762,104 +1264,35 @@ function App() {
             </div>
 
             <aside className="side-column">
-              {!search.trim() && pinnedBookmarks.length && widgetVisibility.pinnedWidget ? (
-                <section className="glass-card widget-card pinned-side-widget">
-                  <div className="pinned-strip-head">
-                    <p className="eyebrow">Fijados</p>
-                    <span>{pinnedBookmarks.length}</span>
-                  </div>
-
-                  <div className="pinned-icon-row pinned-icon-row-side">
-                    {pinnedBookmarks.map((bookmark) => (
-                      <article key={bookmark.id} className="pinned-icon-card" title={bookmark.title}>
-                        <a href={bookmark.url} className="pinned-icon-link">
-                          <div className="shortcut-icon pinned-icon-only">
-                            {getFavicon(bookmark.url) ? <img src={getFavicon(bookmark.url)} alt="" /> : <span>{bookmarkHost(bookmark.url).slice(0, 1).toUpperCase()}</span>}
-                          </div>
-                          <span className="pinned-icon-label">{bookmark.title}</span>
-                        </a>
-                      </article>
-                    ))}
-                  </div>
-                </section>
+              {!search.trim() && widgetVisibility.pinnedWidget ? (
+                <PinnedWidget bookmarks={pinnedBookmarks} />
               ) : null}
 
               {widgetVisibility.weatherWidget ? (
-                <section className="glass-card widget-card weather-widget">
-                  <div className="weather-head">
-                    <p className="eyebrow">Tiempo</p>
-                    <button
-                      type="button"
-                      className="weather-city-button"
-                      onClick={() => {
-                        setWeatherEditorOpen((open) => !open)
-                        setWeatherDraft(weatherCity)
-                        setWeatherError(null)
-                      }}
-                    >
-                      {weatherEditorOpen ? 'Cerrar' : 'Cambiar ciudad'}
-                    </button>
-                  </div>
-
-                  {weatherEditorOpen ? (
-                    <form className="weather-form weather-form-expanded" onSubmit={(event) => void handleWeatherSubmit(event)}>
-                      <input
-                        value={weatherDraft}
-                        onChange={(event) => setWeatherDraft(event.target.value)}
-                        placeholder="Ciudad"
-                        autoFocus
-                      />
-                      <div className="weather-form-actions">
-                        <button type="submit">Guardar</button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => {
-                            setWeatherEditorOpen(false)
-                            setWeatherDraft(weatherCity)
-                            setWeatherError(null)
-                          }}
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    </form>
-                  ) : null}
-
-                  {weather ? (
-                    <>
-                      <h3>{weather.city}</h3>
-                      <div className="weather-main">
-                        <span className="weather-emoji">{weatherEmoji(weather.weatherCode)}</span>
-                        <strong>{weather.temperature}°</strong>
-                      </div>
-                      <p>{weatherLabel(weather.weatherCode)}</p>
-                      <p>Máx {weather.tempMax}° · Mín {weather.tempMin}°</p>
-                      <div className="weather-forecast-mini weather-forecast-grid">
-                        {weather.forecast.map((day, index) => (
-                          <div key={day.date}>
-                            <span>{getForecastDayLabel(day.date, index)}</span>
-                            <strong>{weatherEmoji(day.weatherCode)} {day.tempMax}°</strong>
-                            <small>Mín {day.tempMin}°</small>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : weatherError ? (
-                    <p>{weatherError}</p>
-                  ) : weatherLoading ? (
-                    <p>Cargando previsión…</p>
-                  ) : (
-                    <p>Cargando tiempo…</p>
-                  )}
-                </section>
+                <WeatherWidget
+                  weather={weather}
+                  error={weatherError}
+                  loading={weatherLoading}
+                  editorOpen={weatherEditorOpen}
+                  draft={weatherDraft}
+                  city={weatherCity}
+                  onToggleEditor={() => {
+                    setWeatherEditorOpen((open) => !open)
+                    setWeatherDraft(weatherCity)
+                    setWeatherError(null)
+                  }}
+                  onDraftChange={setWeatherDraft}
+                  onSubmit={(event) => void handleWeatherSubmit(event)}
+                  onCancel={() => {
+                    setWeatherEditorOpen(false)
+                    setWeatherDraft(weatherCity)
+                    setWeatherError(null)
+                  }}
+                />
               ) : null}
 
               {widgetVisibility.noteWidget ? (
-                <section className="glass-card widget-card form-widget">
-                  <p className="eyebrow">Quick note</p>
-                  <textarea className="note-input" value={note} onChange={(event) => void handleNoteChange(event.target.value)} placeholder="Escribe una nota rápida..." />
-                </section>
+                <NoteWidget note={note} onChange={(value) => void handleNoteChange(value)} />
               ) : null}
 
 
@@ -1903,103 +1336,35 @@ function App() {
         </DndContext>
 
         {createModalOpen ? (
-          <div className="modal-backdrop" onClick={closeCreateModal}>
-            <div className="modal-card glass-card" onClick={(event) => event.stopPropagation()}>
-              <div className="modal-head">
-                <div className="modal-tabs">
-                  <button
-                    type="button"
-                    className={`modal-tab ${createMode === 'bookmark' ? 'is-active' : ''}`}
-                    onClick={() => { setCreateMode('bookmark'); setFormError(null) }}
-                  >
-                    Marcador
-                  </button>
-                  <button
-                    type="button"
-                    className={`modal-tab ${createMode === 'folder' ? 'is-active' : ''}`}
-                    onClick={() => { setCreateMode('folder'); setFormError(null) }}
-                  >
-                    Carpeta
-                  </button>
-                </div>
-                <button type="button" className="modal-close" onClick={closeCreateModal}>×</button>
-              </div>
-
-              <div className="modal-choice-grid">
-                <button type="button" className={`modal-choice-card ${createMode === 'bookmark' ? 'is-active' : ''}`} onClick={() => { setCreateMode('bookmark'); setFormError(null) }}>
-                  <strong>Nuevo marcador</strong>
-                  <span>Título y enlace</span>
-                </button>
-                <button type="button" className={`modal-choice-card ${createMode === 'folder' ? 'is-active' : ''}`} onClick={() => { setCreateMode('folder'); setFormError(null) }}>
-                  <strong>Nueva carpeta</strong>
-                  <span>Organiza tus accesos</span>
-                </button>
-              </div>
-
-              {createMode === 'folder' ? (
-                <form className="modal-form" onSubmit={(event) => void handleCreateFolder(event)}>
-                  <p className="eyebrow">Nueva carpeta</p>
-                  <input
-                    value={newFolderName}
-                    onChange={(event) => { setNewFolderName(event.target.value); setFormError(null) }}
-                    placeholder="Ej. IA"
-                    autoFocus
-                  />
-                  {formError ? <p className="form-error">{formError}</p> : null}
-                  <button type="submit">Crear carpeta</button>
-                </form>
-              ) : (
-                <form className="modal-form" onSubmit={(event) => void handleCreateBookmark(event)}>
-                  <p className="eyebrow">Nuevo marcador</p>
-                  <input
-                    value={newBookmarkTitle}
-                    onChange={(event) => setNewBookmarkTitle(event.target.value)}
-                    placeholder="Título"
-                    autoFocus
-                  />
-                  <input
-                    value={newBookmarkUrl}
-                    onChange={(event) => { setNewBookmarkUrl(event.target.value); setFormError(null) }}
-                    placeholder="youtube.com o https://youtube.com"
-                    type="text"
-                    inputMode="url"
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                  {formError ? <p className="form-error">{formError}</p> : null}
-                  <button type="submit" disabled={!selectedFolderId}>Guardar marcador</button>
-                </form>
-              )}
-            </div>
-          </div>
+          <CreateDialog
+            mode={createMode}
+            folders={folders}
+            selectedFolderId={selectedFolderId}
+            newFolderName={newFolderName}
+            newBookmarkTitle={newBookmarkTitle}
+            newBookmarkUrl={newBookmarkUrl}
+            formError={formError}
+            onClose={closeCreateModal}
+            onModeChange={(mode) => { setCreateMode(mode); setFormError(null) }}
+            onFolderNameChange={(value) => { setNewFolderName(value); setFormError(null) }}
+            onBookmarkTitleChange={(value) => setNewBookmarkTitle(value)}
+            onBookmarkUrlChange={(value) => { setNewBookmarkUrl(value); setFormError(null) }}
+            onCreateFolder={(event) => void handleCreateFolder(event)}
+            onCreateBookmark={(event) => void handleCreateBookmark(event)}
+          />
         ) : null}
 
         {editingBookmark ? (
-          <div className="modal-backdrop" onClick={() => { setEditingBookmark(null); setFormError(null) }}>
-            <div className="modal-card glass-card" onClick={(event) => event.stopPropagation()}>
-              <div className="modal-head">
-                <div>
-                  <p className="eyebrow">Editar marcador</p>
-                </div>
-                <button type="button" className="modal-close" onClick={() => { setEditingBookmark(null); setFormError(null) }}>×</button>
-              </div>
-              <form onSubmit={(event) => void handleSaveBookmark(event)} className="modal-form">
-                <input value={editingBookmark.title} onChange={(event) => setEditingBookmark({ ...editingBookmark, title: event.target.value })} placeholder="Título" autoFocus />
-                <input value={editingBookmark.url} onChange={(event) => { setEditingBookmark({ ...editingBookmark, url: event.target.value }); setFormError(null) }} placeholder="youtube.com o https://youtube.com" type="text" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-                <select className="folder-select" value={editingBookmark.parentId || selectedFolderId} onChange={(event) => setEditingBookmark({ ...editingBookmark, parentId: event.target.value })}>
-                  {folders.map((folder) => (
-                    <option key={folder.id} value={folder.id}>{folder.title}</option>
-                  ))}
-                </select>
-                {formError ? <p className="form-error">{formError}</p> : null}
-                <div className="dual-actions">
-                  <button type="submit">Guardar cambios</button>
-                  <button type="button" className="secondary-button" onClick={() => { setEditingBookmark(null); setFormError(null) }}>Cancelar</button>
-                </div>
-              </form>
-            </div>
-          </div>
+          <EditDialog
+            editingBookmark={editingBookmark}
+            folders={folders}
+            selectedFolderId={selectedFolderId}
+            formError={formError}
+            onChange={(value) => setEditingBookmark(value)}
+            onUrlChange={(url) => { setEditingBookmark({ ...editingBookmark, url }); setFormError(null) }}
+            onSubmit={(event) => void handleSaveBookmark(event)}
+            onCancel={() => { setEditingBookmark(null); setFormError(null) }}
+          />
         ) : null}
 
         <Toast toast={toast} />
