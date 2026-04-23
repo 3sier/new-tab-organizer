@@ -4,15 +4,95 @@ export function isFolder(node: BookmarkNode) {
   return !node.url
 }
 
+const SAFE_PROTOCOLS = new Set([
+  'about:',
+  'brave:',
+  'chrome:',
+  'edge:',
+  'file:',
+  'ftp:',
+  'http:',
+  'https:',
+  'magnet:',
+  'mailto:',
+  'sms:',
+  'tel:',
+])
+
+const BLOCKED_PROTOCOLS = new Set([
+  'data:',
+  'javascript:',
+])
+
+const NETWORK_PROTOCOLS = new Set([
+  'ftp:',
+  'http:',
+  'https:',
+])
+
+const DOUBLE_SLASH_PROTOCOLS = new Set([
+  'http:',
+  'https:',
+])
+
+function parseProtocol(raw: string): { protocol: string, rest: string } | null {
+  const match = raw.match(/^([a-zA-Z][a-zA-Z\d+.-]*):(.*)$/)
+  if (!match) return null
+
+  return {
+    protocol: `${match[1].toLowerCase()}:`,
+    rest: match[2],
+  }
+}
+
+function getExplicitProtocol(raw: string): string | null {
+  const parsedProtocol = parseProtocol(raw)
+  if (!parsedProtocol) return null
+
+  const { protocol, rest } = parsedProtocol
+
+  if (rest.startsWith('//')) return protocol
+  if (SAFE_PROTOCOLS.has(protocol) || BLOCKED_PROTOCOLS.has(protocol)) return protocol
+
+  return null
+}
+
+function isIpAddress(hostname: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')
+}
+
+function hasSupportedHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase()
+  if (!normalized) return false
+
+  return normalized === 'localhost' || normalized.includes('.') || isIpAddress(normalized)
+}
+
 export function normalizeUrl(raw: string): string {
   const trimmed = raw.trim()
   if (!trimmed) return ''
 
-  const withProtocol = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
+  const parsedProtocol = parseProtocol(trimmed)
+  if (
+    parsedProtocol
+    && DOUBLE_SLASH_PROTOCOLS.has(parsedProtocol.protocol)
+    && parsedProtocol.rest.startsWith('/')
+    && !parsedProtocol.rest.startsWith('//')
+  ) {
+    return ''
+  }
+
+  const explicitProtocol = getExplicitProtocol(trimmed)
+  const withProtocol = explicitProtocol ? trimmed : `https://${trimmed}`
 
   try {
     const parsed = new URL(withProtocol)
-    if (!parsed.hostname.includes('.')) return ''
+    const protocol = parsed.protocol.toLowerCase()
+
+    if (!SAFE_PROTOCOLS.has(protocol)) return ''
+    if (NETWORK_PROTOCOLS.has(protocol) && !hasSupportedHostname(parsed.hostname)) return ''
+    if (protocol === 'file:' && !parsed.pathname) return ''
+
     return parsed.toString()
   } catch {
     return ''
